@@ -3,16 +3,7 @@ version: '3'
 services:
   app:
     build: .
-    command: python src/app.py
-    user: '1000'
-    environment:
-      DISPLAY:
-      QT_X11_NO_MITSHM: 1
+    command: npm start
+    working_dir: /usr/src/app
     volumes:
-      - .:/code
-      - /etc/group:/etc/group:ro
-      - /etc/passwd:/etc/passwd:ro
-      - /etc/shadow:/etc/shadow:ro
-      - /etc/sudoers.d:/etc/sudoers.d:ro
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ${HOME}/.Xauthority:${HOME}/.Xauthority
+      - .:/usr/src/app
