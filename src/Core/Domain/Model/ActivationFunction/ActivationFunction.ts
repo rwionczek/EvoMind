@@ -1,9 +1,6 @@
 export default abstract class ActivationFunction
 {
-    protected abstract process(value: number): number;
+    public abstract activate(value: number): number;
 
-    public activate(value: number): number
-    {
-        return this.process(value);
-    }
+    public abstract derivative(value: number): number;
 }
