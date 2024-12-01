@@ -1,6 +1,4 @@
 gymnasium
 gymnasium[classic-control]
-tensorflow
-keras
-keras-rl2
+torch
 numpy
