@@ -4,7 +4,7 @@ import gymnasium
 import numpy as np
 import torch
 
-from memory import Memory
+from memory import Memory, MemorySequence, MemorySequenceChunk
 
 environment = gymnasium.make('CartPole-v1')
 
@@ -30,19 +30,23 @@ model = TransformerActionPredictor(input_dim=environment.observation_space.shape
 memory = Memory(10)
 
 total_rewards = []
-for episode in range(10):
+for episode in range(20):
     observation, info = environment.reset()
 
     reward = None
     total_reward = 0
-    memory_sequence
+    memory_sequence = MemorySequence()
     while True:
         action = environment.action_space.sample()
+        previous_observation = observation
         observation, reward, terminated, truncated, info = environment.step(
             action
         )
 
-        memory.add()
+        if terminated:
+            reward = -100
+
+        memory_sequence.add_chunk(MemorySequenceChunk(previous_observation, action, reward))
 
         total_reward += reward
 
@@ -51,6 +55,8 @@ for episode in range(10):
 
         if truncated:
             break
+
+    memory.add(memory_sequence)
 
     total_rewards.append(total_reward)
 
