@@ -1,22 +1,48 @@
+from collections import deque
+
 import gymnasium
-import matplotlib.pyplot as plt
+import numpy as np
+import torch
 
-from evomind import Agent
+from memory import Memory
 
-environment = gymnasium.make('Acrobot-v1', render_mode='human')
-agent = Agent(environment.observation_space.shape[0], environment.action_space.n)
+environment = gymnasium.make('CartPole-v1')
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class TransformerActionPredictor(torch.nn.Module):
+    def __init__(self, input_dim, n_actions, d_model=64, nhead=8, num_layers=3):
+        super().__init__()
+        self.embedding = torch.nn.Linear(input_dim, d_model)
+        encoder_layer = torch.nn.TransformerEncoderLayer(d_model, nhead)
+        self.transformer = torch.nn.TransformerEncoder(encoder_layer, num_layers)
+        self.decoder = torch.nn.Linear(d_model, n_actions)
+
+    def forward(self, src):
+        embedded = self.embedding(src)
+        transformer_out = self.transformer(embedded)
+        output = self.decoder(transformer_out[-1])
+        return output
+
+
+model = TransformerActionPredictor(input_dim=environment.observation_space.shape[0],
+                                   n_actions=environment.action_space.n).to(device)
+memory = Memory(10)
 
 total_rewards = []
 for episode in range(10):
     observation, info = environment.reset()
-    agent.set_observation(observation, None)
 
     reward = None
     total_reward = 0
+    memory_sequence
     while True:
-        observation, reward, terminated, truncated, info = environment.step(agent.choose_action())
-        agent.set_observation(observation, reward)
-        agent.learn(print_loss=False)
+        action = environment.action_space.sample()
+        observation, reward, terminated, truncated, info = environment.step(
+            action
+        )
+
+        memory.add()
 
         total_reward += reward
 
@@ -28,29 +54,6 @@ for episode in range(10):
 
     total_rewards.append(total_reward)
 
-    agent.set_exploration_probability(agent.exploration_probability * 0.7)
-
-    print(f'Exploration probability: {agent.exploration_probability}')
-    print(f'Episode {episode}')
+    print('Episode ', episode, '; Total reward %.1f' % total_reward, '; 100 game average %.1f' % np.mean(total_rewards[-100:]))
 
 environment.close()
-
-environment = gymnasium.make('Acrobot-v1', render_mode='human')
-observation, info = environment.reset()
-
-agent.set_exploration_probability(0.0)
-
-reward = None
-while True:
-    agent.set_observation(observation, reward)
-    observation, reward, terminated, truncated, info = environment.step(agent.choose_action())
-
-    if terminated or truncated:
-        break
-environment.close()
-
-plt.plot(total_rewards)
-plt.title('Total Rewards Over Episodes')
-plt.xlabel('Episode')
-plt.ylabel('Total Reward')
-plt.show()

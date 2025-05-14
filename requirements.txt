@@ -1,5 +1,7 @@
-gymnasium~=0.28.1
+gymnasium
 gymnasium[classic-control]
-torch~=2.5.1+cu124
+swig
+gymnasium[box2d]
+torch
 numpy
-matplotlib~=3.8.4
+matplotlib
