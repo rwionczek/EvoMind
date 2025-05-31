@@ -3,16 +3,17 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+# device = 'cpu'
 print(device)
 
-block_size = 100
+block_size = 16
 batch_size = 16
 max_iters = 100
 learning_rate = 3e-4
 eval_iters = 100
-n_embd = 384
-n_head = 8
-n_layer = 8
+n_embd = 512
+n_head = 2
+n_layer = 2
 dropout = 0.2
 
 
@@ -143,26 +144,26 @@ class GPTModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, memory_sequence, targets=None):
-        B, T, C = memory_sequence.shape
+    def forward(self, trajectory, targets=None):
+        B, T, C = trajectory.shape
 
-        input = self.input_layer(memory_sequence)
+        input = self.input_layer(trajectory)
 
         pos_emb = self.position_embedding_table(torch.arange(T, device=device))
         x = input + pos_emb
         x = self.blocks(x)
         x = self.ln_f(x)
-        memory_sequence_chunk = self.lm_head(x)
+        outputs = self.lm_head(x)
 
         if targets is None:
             loss = None
         else:
-            B, T, C = memory_sequence_chunk.shape
-            memory_sequence_chunk = memory_sequence_chunk.view(B * T, C)
+            B, T, C = outputs.shape
+            outputs = outputs.view(B * T, C)
             targets = targets.view(B * T, C)
-            loss = F.mse_loss(memory_sequence_chunk, targets)
+            loss = F.mse_loss(outputs, targets)
 
-        return memory_sequence_chunk, loss
+        return outputs, loss
 
     def generate(self, index, max_new_tokens):
         for _ in range(max_new_tokens):
