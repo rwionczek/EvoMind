@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-# device = 'cpu'
+device = 'cpu'
 print(device)
 
 block_size = 16
@@ -11,10 +11,10 @@ batch_size = 16
 max_iters = 100
 learning_rate = 3e-4
 eval_iters = 100
-n_embd = 512
+n_embd = 64
 n_head = 2
 n_layer = 2
-dropout = 0.2
+dropout = 0.1
 
 
 # chars = ""
