@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-device = 'cpu'
+# device = 'cpu'
 print(device)
 
 block_size = 16
@@ -11,9 +11,9 @@ batch_size = 16
 max_iters = 100
 learning_rate = 3e-4
 eval_iters = 100
-n_embd = 64
-n_head = 2
-n_layer = 2
+n_embd = 256
+n_head = 4
+n_layer = 4
 dropout = 0.1
 
 
@@ -128,13 +128,16 @@ class Block(nn.Module):
 
 
 class GPTModel(nn.Module):
-    def __init__(self, memory_sequence_chunk_size):
+    def __init__(self, observation_size, action_size):
         super().__init__()
-        self.input_layer = nn.Linear(memory_sequence_chunk_size, n_embd)
+        self.observation_size = observation_size
+        self.action_size = action_size
+        chunk_size = observation_size + action_size + 1
+        self.input_layer = nn.Linear(chunk_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd)
-        self.lm_head = nn.Linear(n_embd, memory_sequence_chunk_size)
+        self.lm_head = nn.Linear(n_embd, chunk_size)
 
     def __init_weights(self, module):
         if (isinstance(module, nn.Linear)):
@@ -161,7 +164,20 @@ class GPTModel(nn.Module):
             B, T, C = outputs.shape
             outputs = outputs.view(B * T, C)
             targets = targets.view(B * T, C)
-            loss = F.mse_loss(outputs, targets)
+
+            observation_outputs = outputs[:, :self.observation_size]
+            observation_targets = targets[:, :self.observation_size]
+            observation_loss = F.mse_loss(observation_outputs, observation_targets)
+
+            action_outputs = outputs[:, self.observation_size:self.observation_size + self.action_size]
+            action_targets = targets[:, self.observation_size:self.observation_size + self.action_size].argmax(dim=1)
+            action_loss = F.cross_entropy(action_outputs, action_targets)
+
+            reward_outputs = outputs[:, -1]
+            reward_targets = targets[:, -1]
+            reward_loss = F.mse_loss(reward_outputs, reward_targets)
+
+            loss = observation_loss + action_loss + reward_loss
 
         return outputs, loss
 
