@@ -132,15 +132,15 @@ for episode in range(1, 10000):
                 torch.zeros(environment.action_space.n + 1),
             ])
             memory_paddings = torch.roll(memory_paddings, -1, dims=0)
-            padding = block_size - step if step < block_size else 0
+            # padding = block_size - step if step < block_size else 0
+            padding = 0
             memory_paddings[-1] = padding
             memory_batch = memory[-block_size + padding:]
             memory_batch = pad_to_block(memory_batch)
             padding_mask = create_padding_mask(padding)
 
             previous_observation = observation
-            prediction, _ = model(memory_batch.unsqueeze(0).to(device),
-                                  padding_mask=padding_mask.unsqueeze(0).to(device))
+            prediction, _ = model(memory_batch.unsqueeze(0).to(device))
 
             token_index = -2 - padding if padding != block_size - 1 else 0
 
@@ -173,6 +173,10 @@ for episode in range(1, 10000):
         total_reward += normalized_reward
 
         if terminated or truncated:
+            memory = torch.roll(memory, -block_size, dims=0)
+            memory[-block_size:] = torch.cat([
+                torch.zeros(memory_chunk_length),
+            ])
             break
 
     if not training:
@@ -202,7 +206,7 @@ for episode in range(1, 10000):
 
             model.train()
 
-            logits, loss = model.forward(xb, yb, padding)
+            logits, loss = model.forward(xb, yb)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
@@ -211,15 +215,15 @@ for episode in range(1, 10000):
             model.eval()
 
     if episode % 20 == 0:
-        # plt.plot(episode_values, label='Episode values')
-        # plt.plot(average_episode_values, label='Average episode values')
-        # plt.plot(average_trajectory_values, label='Average trajectory values')
-        # # plt.plot(max_trajectory_values, label='Max trajectory values')
-        #
-        # plt.xlabel('Episode')
-        # plt.ylabel('Trajectory values')
-        # plt.legend()
-        # plt.show()
+        plt.plot(episode_values, label='Episode values')
+        plt.plot(average_episode_values, label='Average episode values')
+        plt.plot(average_trajectory_values, label='Average trajectory values')
+        # plt.plot(max_trajectory_values, label='Max trajectory values')
+
+        plt.xlabel('Episode')
+        plt.ylabel('Trajectory values')
+        plt.legend()
+        plt.show()
         plt.figure(figsize=(8, 5))
         plt.hist(first_action_probabilities, bins=20, color='skyblue', edgecolor='black')
         plt.hist(second_action_probabilities, bins=20, color='orange', edgecolor='black')
