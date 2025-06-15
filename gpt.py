@@ -6,12 +6,12 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 # device = 'cpu'
 print(device)
 
-block_size = 16
+block_size = 32
 batch_size = 16
 max_iters = 100
 learning_rate = 3e-4
 eval_iters = 100
-n_embd = 128
+n_embd = 256
 n_head = 4
 n_layer = 4
 dropout = 0.1
@@ -70,7 +70,7 @@ class Head(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, padding_mask=None):
+    def forward(self, x):
         B, T, C = x.shape
         k = self.key(x)
         q = self.query(x)
@@ -78,10 +78,6 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * k.shape[-1] ** -0.5
 
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
-
-        if padding_mask is not None:
-            padding_mask = padding_mask.unsqueeze(-2).expand(B, T, T)
-            wei = wei.masked_fill(padding_mask == 0, float('-inf'))
 
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
@@ -98,8 +94,8 @@ class MultiHeadAttention(nn.Module):
         self.proj = nn.Linear(head_size * num_heads, n_embd)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, padding_mask=None):
-        out = torch.cat([h(x, padding_mask=padding_mask) for h in self.heads], dim=-1)
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
         out = self.dropout(self.proj(out))
         return out
 
@@ -127,8 +123,8 @@ class Block(nn.Module):
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
 
-    def forward(self, x, padding_mask=None):
-        x = x + self.sa(self.ln1(x), padding_mask=padding_mask)
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
         x = x + self.ffwd(self.ln2(x))
         return x
 
@@ -138,7 +134,7 @@ class GPTModel(nn.Module):
         super().__init__()
         self.observation_size = observation_size
         self.action_size = action_size
-        chunk_size = observation_size + action_size + 1
+        chunk_size = observation_size + action_size + 2
         self.input_layer = nn.Linear(chunk_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.ModuleList([Block(n_embd, n_head=n_head) for _ in range(n_layer)])
@@ -153,7 +149,7 @@ class GPTModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, trajectory, targets=None, padding_mask=None):
+    def forward(self, trajectory, targets=None):
         B, T, C = trajectory.shape
 
         input = self.input_layer(trajectory)
@@ -162,7 +158,7 @@ class GPTModel(nn.Module):
         x = input + pos_emb
 
         for block in self.blocks:
-            x = block(x, padding_mask=padding_mask)
+            x = block(x)
 
         x = self.ln_f(x)
         outputs = self.lm_head(x)
@@ -176,27 +172,21 @@ class GPTModel(nn.Module):
 
             observation_outputs = outputs[:, :self.observation_size]
             observation_targets = targets[:, :self.observation_size]
-            observation_loss = F.mse_loss(observation_outputs, observation_targets, reduction='none').mean(dim=1)
+            observation_loss = F.mse_loss(observation_outputs, observation_targets)
 
             action_outputs = outputs[:, self.observation_size:self.observation_size + self.action_size]
             action_targets = targets[:, self.observation_size:self.observation_size + self.action_size].argmax(dim=1)
-            action_loss = F.cross_entropy(action_outputs, action_targets, reduction='none')
+            action_loss = F.cross_entropy(action_outputs, action_targets)
 
-            reward_outputs = outputs[:, -1]
-            reward_targets = targets[:, -1]
-            reward_loss = F.mse_loss(reward_outputs, reward_targets, reduction='none')
+            reward_outputs = outputs[:, -2]
+            reward_targets = targets[:, -2]
+            reward_loss = F.mse_loss(reward_outputs, reward_targets)
 
-            if padding_mask is not None:
-                padding_mask = padding_mask.view(B * T)
-                observation_loss = (observation_loss * padding_mask).sum() / padding_mask.sum()
-                action_loss = (action_loss * padding_mask).sum() / padding_mask.sum()
-                reward_loss = (reward_loss * padding_mask).sum() / padding_mask.sum()
-            else:
-                observation_loss = observation_loss.mean()
-                action_loss = action_loss.mean()
-                reward_loss = reward_loss.mean()
+            wakeup_outputs = outputs[:, -1]
+            wakeup_targets = targets[:, -1]
+            wakeup_loss = F.mse_loss(wakeup_outputs, wakeup_targets)
 
-            loss = observation_loss + action_loss + reward_loss
+            loss = observation_loss + action_loss + reward_loss + wakeup_loss
 
         return outputs, loss
 
