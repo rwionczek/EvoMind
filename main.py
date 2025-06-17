@@ -6,12 +6,12 @@ import torch
 from matplotlib import pyplot as plt
 
 from gpt import GPTModel, block_size, device
-from memory import calculate_novelty
+from memory import calculate_last_novelty
 
 memory_size = 2 ** 12
 
 training = True
-training = False
+# training = False
 
 # environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
 environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
@@ -20,6 +20,7 @@ memory_chunk_length = environment.observation_space.shape[0] + environment.actio
 memory = torch.zeros(memory_size, memory_chunk_length)
 memory_values = torch.zeros(memory_size)
 memory_novelties = torch.zeros(memory_size)
+memory_novelty_probabilities = torch.zeros(memory_size)
 
 model = GPTModel(environment.observation_space.shape[0], environment.action_space.n).to(device)
 
@@ -53,7 +54,7 @@ def get_memory_train_batch():
 
     possible_ix = possible_ix + block_size
 
-    possible_memory_values = memory_values[possible_ix] * memory_novelty[possible_ix]
+    possible_memory_values = memory_values[possible_ix] * memory_novelty_probabilities[possible_ix]
 
     probabilities = torch.softmax(possible_memory_values / 4.0, dim=0)
     ix = torch.multinomial(probabilities, learn_batch_size, replacement=True)
@@ -150,6 +151,9 @@ for episode in range(1, 10000):
             torch.tensor([normalized_reward, 1.0], dtype=torch.float32),
         ])
 
+        memory_novelties = torch.roll(memory_novelties, -1, dims=0)
+        memory_novelties[-1] = calculate_last_novelty(memory, block_size)
+
         total_reward += normalized_reward
 
         if terminated or truncated:
@@ -173,7 +177,7 @@ for episode in range(1, 10000):
     average_episode_values.append(average_episode_value)
 
     if episode % 10 == 0:
-        memory_novelty = calculate_novelty(memory, block_size)
+        memory_novelty_probabilities = torch.softmax(memory_novelties, dim=0)
 
         losses = torch.zeros(eval_iters)
         for iter in range(300):
