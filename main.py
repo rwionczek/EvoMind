@@ -8,13 +8,13 @@ from matplotlib import pyplot as plt
 from gpt import GPTModel, block_size, device
 from memory import calculate_memory_batch_probabilities, calculate_last_novelty
 
-memory_size = 2 ** 10
+memory_size = 2 ** 12
 
 training = True
 # training = False
 
-# environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
-environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
+environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
+# environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
 
 memory_chunk_length = environment.observation_space.shape[0] + environment.action_space.n + 2
 memory = torch.zeros(memory_size, memory_chunk_length)
@@ -34,12 +34,12 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
 learn_batch_size = 2 ** 10
 
-# observation_space_low = environment.observation_space.low
-# observation_space_high = environment.observation_space.high
+observation_space_low = environment.observation_space.low
+observation_space_high = environment.observation_space.high
 
 
-observation_space_low = np.array([-4.8, -5.0, -0.418, -5.0])
-observation_space_high = np.array([4.8, 5.0, 0.418, 5.0])
+# observation_space_low = np.array([-4.8, -5.0, -0.418, -5.0])
+# observation_space_high = np.array([4.8, 5.0, 0.418, 5.0])
 
 
 def normalize_observation(observation):
@@ -209,12 +209,15 @@ for episode in range(1, 10000):
         plt.show()
 
         plt.figure(figsize=(8, 5))
+        plt.subplot(3, 1, 1)
         plt.plot(memory_values / 100, label='Memory values')
+        plt.subplot(3, 1, 2)
         normalized_memory_novelties = memory_novelties - memory_novelties[memory_novelties != 0.0].min()
         normalized_memory_novelties = normalized_memory_novelties - normalized_memory_novelties.min()
         plt.plot(memory_novelties / memory_novelties.max(), label='Memory novelties')
         plt.plot(normalized_memory_novelties / normalized_memory_novelties.max(),
                  label='Normalized memory novelties')
+        plt.subplot(3, 1, 3)
         plt.plot(memory_batch_possible_ix, memory_batch_probabilities / memory_batch_probabilities.max(), 'r.',
                  label='Memory batch probabilities')
         plt.xlabel('Memory step')
