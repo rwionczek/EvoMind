@@ -6,9 +6,9 @@ import torch
 from matplotlib import pyplot as plt
 
 from gpt import GPTModel, block_size, device
-from memory import calculate_last_novelty
+from memory import calculate_memory_batch_probabilities, calculate_last_novelty
 
-memory_size = 2 ** 12
+memory_size = 2 ** 10
 
 training = True
 # training = False
@@ -20,7 +20,9 @@ memory_chunk_length = environment.observation_space.shape[0] + environment.actio
 memory = torch.zeros(memory_size, memory_chunk_length)
 memory_values = torch.zeros(memory_size)
 memory_novelties = torch.zeros(memory_size)
-memory_novelty_probabilities = torch.zeros(memory_size)
+normalized_memory_novelties = torch.zeros(memory_size)
+memory_batch_possible_ix = torch.zeros(memory_size)
+memory_batch_probabilities = torch.zeros(memory_size)
 
 model = GPTModel(environment.observation_space.shape[0], environment.action_space.n).to(device)
 
@@ -30,7 +32,7 @@ if not training:
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
-learn_batch_size = 128
+learn_batch_size = 2 ** 10
 
 # observation_space_low = environment.observation_space.low
 # observation_space_high = environment.observation_space.high
@@ -45,31 +47,8 @@ def normalize_observation(observation):
 
 
 def get_memory_train_batch():
-    wakeup_ix = torch.where(memory[block_size:-1, -1] == 1.0)[0]
-
-    min_return_to_go = memory_values[wakeup_ix].mean()
-    possible_ix = torch.where(memory_values[block_size:-1] >= min_return_to_go)[0]
-
-    possible_ix = np.intersect1d(possible_ix, wakeup_ix)
-
-    possible_ix = possible_ix + block_size
-
-    possible_memory_values = memory_values[possible_ix] * memory_novelty_probabilities[possible_ix]
-
-    probabilities = torch.softmax(possible_memory_values / 4.0, dim=0)
-    ix = torch.multinomial(probabilities, learn_batch_size, replacement=True)
-    #
-    # wakeup_ix = torch.where(memory[block_size:-1, -1] == 1.0)[0]
-    #
-    # min_return_to_go = memory_values[wakeup_ix].mean()
-    #
-    # possible_ix = torch.where(memory_values[block_size:-1] >= min_return_to_go)[0]
-    #
-    # possible_ix = np.intersect1d(possible_ix, wakeup_ix)
-    #
-    # possible_ix = possible_ix + block_size
-    #
-    # ix = torch.randint(len(possible_ix), (learn_batch_size,))
+    possible_ix = memory_batch_possible_ix
+    ix = torch.multinomial(memory_batch_probabilities, learn_batch_size, replacement=True)
 
     x = torch.stack(
         [memory[possible_ix[i] - block_size + 1:possible_ix[i] + 1]
@@ -108,6 +87,9 @@ for episode in range(1, 10000):
         torch.tensor(normalize_observation(observation), dtype=torch.float32),
         torch.zeros(environment.action_space.n + 2),
     ])
+
+    memory_novelties = torch.roll(memory_novelties, -block_size, dims=0)
+    memory_novelties[-block_size:] = 0.0
 
     total_reward = 0
 
@@ -168,7 +150,7 @@ for episode in range(1, 10000):
         reward = memory[idx, -2].item()
         wakeup = memory[idx, -1].item()
 
-        future_reward = reward + 1.0 * future_reward if wakeup != 0 else 0.0
+        future_reward = reward + 0.99 * future_reward if wakeup != 0 else 0.0
 
         memory_values[idx] = future_reward
 
@@ -176,8 +158,19 @@ for episode in range(1, 10000):
     average_episode_value = np.mean(episode_values)
     average_episode_values.append(average_episode_value)
 
+    print(f"Episode: {episode}")
+
     if episode % 10 == 0:
-        memory_novelty_probabilities = torch.softmax(memory_novelties, dim=0)
+        normalized_memory_novelties = memory_novelties - memory_novelties[memory_novelties != 0.0].min()
+        normalized_memory_novelties = normalized_memory_novelties - normalized_memory_novelties.min()
+        normalized_memory_novelties = normalized_memory_novelties / normalized_memory_novelties.max()
+
+        memory_batch_possible_ix, memory_batch_probabilities = calculate_memory_batch_probabilities(
+            memory,
+            memory_values,
+            normalized_memory_novelties,
+            block_size,
+        )
 
         losses = torch.zeros(eval_iters)
         for iter in range(300):
@@ -200,24 +193,36 @@ for episode in range(1, 10000):
         plt.plot(episode_values, label='Episode values')
         plt.plot(average_episode_values, label='Average episode values')
         plt.plot(average_trajectory_values, label='Average trajectory values')
-        # plt.plot(max_trajectory_values, label='Max trajectory values')
-
         plt.xlabel('Episode')
         plt.ylabel('Trajectory values')
         plt.legend()
         plt.show()
+
         plt.figure(figsize=(8, 5))
         plt.hist(first_action_probabilities, bins=20, color='skyblue', edgecolor='black')
         plt.hist(second_action_probabilities, bins=20, color='orange', edgecolor='black')
         plt.hist(third_action_probabilities, bins=20, color='green', edgecolor='black')
         plt.hist(fourth_action_probabilities, bins=20, color='red', edgecolor='black')
         plt.xlabel('Episode Values')
-        plt.ylabel('Frequency')
-        plt.title('Histogram of Episode Values')
+        plt.ylabel('Action probability')
         plt.grid(True, alpha=0.3)
         plt.show()
 
-    if episode % 100 == 0:
+        plt.figure(figsize=(8, 5))
+        plt.plot(memory_values / 100, label='Memory values')
+        normalized_memory_novelties = memory_novelties - memory_novelties[memory_novelties != 0.0].min()
+        normalized_memory_novelties = normalized_memory_novelties - normalized_memory_novelties.min()
+        plt.plot(memory_novelties / memory_novelties.max(), label='Memory novelties')
+        plt.plot(normalized_memory_novelties / normalized_memory_novelties.max(),
+                 label='Normalized memory novelties')
+        plt.plot(memory_batch_possible_ix, memory_batch_probabilities / memory_batch_probabilities.max(), 'r.',
+                 label='Memory batch probabilities')
+        plt.xlabel('Memory step')
+        plt.ylabel('Memory value')
+        plt.legend()
+        plt.show()
+
+    if episode % 10 == 0:
         torch.save(model.state_dict(), model_storage)
         print(f"Saved model at episode {episode}")
 
