@@ -8,17 +8,18 @@ from matplotlib import pyplot as plt
 from gpt import GPTModel, block_size, device
 from memory import calculate_memory_batch_probabilities, calculate_last_novelty
 
-memory_size = 2 ** 12
+memory_size = 2 ** 14
 
 training = True
 # training = False
 
-environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
-# environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
+# environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
+environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
 
-memory_chunk_length = environment.observation_space.shape[0] + environment.action_space.n + 2
+memory_chunk_length = environment.observation_space.shape[0] + environment.action_space.n + 1
 memory = torch.zeros(memory_size, memory_chunk_length)
-memory_values = torch.zeros(memory_size)
+memory_rewards = torch.zeros(memory_size)
+memory_actives = torch.zeros(memory_size)
 memory_novelties = torch.zeros(memory_size)
 normalized_memory_novelties = torch.zeros(memory_size)
 memory_batch_possible_ix = torch.zeros(memory_size)
@@ -34,12 +35,12 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 
 learn_batch_size = 2 ** 10
 
-observation_space_low = environment.observation_space.low
-observation_space_high = environment.observation_space.high
+# observation_space_low = environment.observation_space.low
+# observation_space_high = environment.observation_space.high
 
 
-# observation_space_low = np.array([-4.8, -5.0, -0.418, -5.0])
-# observation_space_high = np.array([4.8, 5.0, 0.418, 5.0])
+observation_space_low = np.array([-4.8, -5.0, -0.418, -5.0])
+observation_space_high = np.array([4.8, 5.0, 0.418, 5.0])
 
 
 def normalize_observation(observation):
@@ -48,20 +49,24 @@ def normalize_observation(observation):
 
 def get_memory_train_batch():
     possible_ix = memory_batch_possible_ix
-    ix = torch.multinomial(memory_batch_probabilities, learn_batch_size, replacement=True)
+    # ix = torch.multinomial(memory_batch_probabilities, learn_batch_size, replacement=True)
+
+    ix = torch.randint(0, possible_ix.shape[0], (learn_batch_size,))
 
     x = torch.stack(
         [memory[possible_ix[i] - block_size + 1:possible_ix[i] + 1]
          for
          i in
          ix])
-    x[:, -1, environment.observation_space.shape[0]:] = 0
+    x[:, :, -1] = 0.0
 
     y = torch.stack(
         [memory[possible_ix[i] - block_size + 2:possible_ix[i] + 2]
          for
          i in
          ix])
+
+    y[:, :-1, -1] = 0.0
 
     x, y = x.to(device), y.to(device)
     return x, y
@@ -81,39 +86,55 @@ fourth_action_probabilities = deque(maxlen=1000)
 for episode in range(1, 10000):
     model.eval()
     observation, info = environment.reset()
+    reward = 0
 
     memory = torch.roll(memory, -block_size, dims=0)
     memory[-block_size:] = torch.cat([
         torch.tensor(normalize_observation(observation), dtype=torch.float32),
-        torch.zeros(environment.action_space.n + 2),
+        torch.zeros(environment.action_space.n + 1),
     ])
+
+    memory_rewards = torch.roll(memory_rewards, -block_size, dims=0)
+    memory_rewards[-block_size:] = 0.0
+
+    memory_actives = torch.roll(memory_actives, -block_size, dims=0)
+    memory_actives[-block_size:] = 0.0
 
     memory_novelties = torch.roll(memory_novelties, -block_size, dims=0)
     memory_novelties[-block_size:] = 0.0
 
     total_reward = 0
 
+    steps = 0
+
     while True:
+        steps += 1
 
         with torch.no_grad():
             memory = torch.roll(memory, -1, dims=0)
             memory[-1] = torch.cat([
                 torch.tensor(normalize_observation(observation), dtype=torch.float32),
-                torch.zeros(environment.action_space.n + 2),
+                torch.zeros(environment.action_space.n),
+                torch.tensor([reward], dtype=torch.float32),
             ])
 
+            trajectories = memory[-block_size:].unsqueeze(0).repeat(environment.action_space.n, 1, 1)
+            trajectories[:, :, -1] = 0.0
+
+            for i in range(trajectories.shape[0]):
+                trajectories[i, -1, environment.observation_space.shape[0] + i] = 1.0
+
             previous_observation = observation
-            prediction, _ = model(memory[-block_size:].unsqueeze(0).to(device))
+            previous_reward = reward
+            prediction, _ = model(trajectories.to(device))
 
-            action_prediction = prediction[:, -2, environment.observation_space.shape[0]:
-                                                  environment.observation_space.shape[
-                                                      0] + environment.action_space.n]
-            action_probabilities = torch.softmax(action_prediction, dim=-1)
+            prediction_values = prediction[:, -1, -1]
+            action_probabilities = torch.softmax(prediction_values / 0.1, dim=-1)
 
-            first_action_probabilities.append(action_prediction[0, 0].item())
-            second_action_probabilities.append(action_prediction[0, 1].item())
-            # third_action_probabilities.append(action_prediction[0, 2].item())
-            # fourth_action_probabilities.append(action_prediction[0, 3].item())
+            first_action_probabilities.append(action_probabilities[0].item())
+            second_action_probabilities.append(action_probabilities[1].item())
+            # third_action_probabilities.append(action_probabilities[2].item())
+            # fourth_action_probabilities.append(action_probabilities[3].item())
 
             action = action_probabilities.multinomial(num_samples=1).item()
 
@@ -124,19 +145,27 @@ for episode in range(1, 10000):
         action_tensor = torch.zeros(environment.action_space.n)
         action_tensor[action] = 1.0
 
+        reward_tensor = torch.tensor([prediction[action, -1, -1]], dtype=torch.float32)
+
         # normalized_reward = reward / 100.0
-        normalized_reward = reward
+        # normalized_reward = reward
 
         memory[-1] = torch.cat([
             torch.tensor(normalize_observation(previous_observation), dtype=torch.float32),
             action_tensor,
-            torch.tensor([normalized_reward, 1.0], dtype=torch.float32),
+            reward_tensor,
         ])
+
+        memory_rewards = torch.roll(memory_rewards, -1, dims=0)
+        memory_rewards[-1] = torch.tensor([previous_reward], dtype=torch.float32)
+
+        memory_actives = torch.roll(memory_actives, -1, dims=0)
+        memory_actives[-1] = torch.tensor([1.0], dtype=torch.float32)
 
         memory_novelties = torch.roll(memory_novelties, -1, dims=0)
         memory_novelties[-1] = calculate_last_novelty(memory, block_size)
 
-        total_reward += normalized_reward
+        total_reward += reward
 
         if terminated or truncated:
             break
@@ -147,12 +176,14 @@ for episode in range(1, 10000):
     future_reward = 0.0
 
     for idx in reversed(range(memory_size)):
-        reward = memory[idx, -2].item()
-        wakeup = memory[idx, -1].item()
+        reward = memory_rewards[idx].item()
+        active = memory_actives[idx].item()
 
-        future_reward = reward + 0.99 * future_reward if wakeup != 0 else 0.0
+        future_reward = reward + 0.99 * future_reward if active != 0 else 0.0
 
-        memory_values[idx] = future_reward
+        memory[idx, -1] = future_reward
+
+    memory[:, -1] = memory[:, -1] / 500.0
 
     episode_values.append(total_reward)
     average_episode_value = np.mean(episode_values)
@@ -165,9 +196,10 @@ for episode in range(1, 10000):
         normalized_memory_novelties = normalized_memory_novelties - normalized_memory_novelties.min()
         normalized_memory_novelties = normalized_memory_novelties / normalized_memory_novelties.max()
 
-        memory_batch_possible_ix, memory_batch_probabilities = calculate_memory_batch_probabilities(
+        memory_batch_possible_ix = calculate_memory_batch_probabilities(
             memory,
-            memory_values,
+            memory_rewards,
+            memory_actives,
             normalized_memory_novelties,
             block_size,
         )
@@ -209,17 +241,15 @@ for episode in range(1, 10000):
         plt.show()
 
         plt.figure(figsize=(8, 5))
-        plt.subplot(3, 1, 1)
-        plt.plot(memory_values / 100, label='Memory values')
-        plt.subplot(3, 1, 2)
+        plt.plot(memory[:, -1], label='Memory return to go')
+        plt.plot(memory_actives, 'r.', label='Memory return to go')
         normalized_memory_novelties = memory_novelties - memory_novelties[memory_novelties != 0.0].min()
         normalized_memory_novelties = normalized_memory_novelties - normalized_memory_novelties.min()
-        plt.plot(memory_novelties / memory_novelties.max(), label='Memory novelties')
-        plt.plot(normalized_memory_novelties / normalized_memory_novelties.max(),
-                 label='Normalized memory novelties')
-        plt.subplot(3, 1, 3)
-        plt.plot(memory_batch_possible_ix, memory_batch_probabilities / memory_batch_probabilities.max(), 'r.',
-                 label='Memory batch probabilities')
+        # plt.plot(memory_novelties / memory_novelties.max(), label='Memory novelties')
+        # plt.plot(normalized_memory_novelties / normalized_memory_novelties.max(),
+        #          label='Normalized memory novelties')
+        # plt.plot(memory_batch_possible_ix, memory_batch_probabilities / memory_batch_probabilities.max(), 'r.',
+        #          label='Memory batch probabilities')
         plt.xlabel('Memory step')
         plt.ylabel('Memory value')
         plt.legend()

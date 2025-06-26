@@ -134,7 +134,7 @@ class GPTModel(nn.Module):
         super().__init__()
         self.observation_size = observation_size
         self.action_size = action_size
-        chunk_size = observation_size + action_size + 2
+        chunk_size = observation_size + action_size + 1
         self.input_layer = nn.Linear(chunk_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.ModuleList([Block(n_embd, n_head=n_head) for _ in range(n_layer)])
