@@ -105,17 +105,12 @@ for episode in range(1, 10000):
 
     total_reward = 0
 
-    steps = 0
-
     while True:
-        steps += 1
-
         with torch.no_grad():
             memory = torch.roll(memory, -1, dims=0)
             memory[-1] = torch.cat([
                 torch.tensor(normalize_observation(observation), dtype=torch.float32),
-                torch.zeros(environment.action_space.n),
-                torch.tensor([reward], dtype=torch.float32),
+                torch.zeros(environment.action_space.n + 1),
             ])
 
             trajectories = memory[-block_size:].unsqueeze(0).repeat(environment.action_space.n, 1, 1)
@@ -129,23 +124,31 @@ for episode in range(1, 10000):
             prediction, _ = model(trajectories.to(device))
 
             prediction_values = prediction[:, -1, -1]
-            action_probabilities = torch.softmax(prediction_values / 0.1, dim=-1)
+            action_probabilities = torch.softmax(prediction_values * 10.0, dim=-1)
 
             first_action_probabilities.append(action_probabilities[0].item())
             second_action_probabilities.append(action_probabilities[1].item())
             # third_action_probabilities.append(action_probabilities[2].item())
             # fourth_action_probabilities.append(action_probabilities[3].item())
 
-            action = action_probabilities.multinomial(num_samples=1).item()
+            if training == False or episode % 2 == 0:
+                action = action_probabilities.argmax().item()
+            else:
+                action = action_probabilities.multinomial(num_samples=1).item()
 
         observation, reward, terminated, truncated, info = environment.step(
             action
         )
 
+        total_reward += reward
+
+        reward = 0
+
+        if terminated:
+            reward = -10.0
+
         action_tensor = torch.zeros(environment.action_space.n)
         action_tensor[action] = 1.0
-
-        reward_tensor = torch.tensor([prediction[action, -1, -1]], dtype=torch.float32)
 
         # normalized_reward = reward / 100.0
         # normalized_reward = reward
@@ -153,7 +156,7 @@ for episode in range(1, 10000):
         memory[-1] = torch.cat([
             torch.tensor(normalize_observation(previous_observation), dtype=torch.float32),
             action_tensor,
-            reward_tensor,
+            torch.tensor([0.0], dtype=torch.float32)
         ])
 
         memory_rewards = torch.roll(memory_rewards, -1, dims=0)
@@ -165,9 +168,23 @@ for episode in range(1, 10000):
         memory_novelties = torch.roll(memory_novelties, -1, dims=0)
         memory_novelties[-1] = calculate_last_novelty(memory, block_size)
 
-        total_reward += reward
-
         if terminated or truncated:
+            memory = torch.roll(memory, -1, dims=0)
+            memory[-1] = torch.cat([
+                torch.tensor(normalize_observation(observation), dtype=torch.float32),
+                torch.zeros(environment.action_space.n),
+                torch.tensor([0.0], dtype=torch.float32)
+            ])
+
+            memory_rewards = torch.roll(memory_rewards, -1, dims=0)
+            memory_rewards[-1] = torch.tensor([reward], dtype=torch.float32)
+
+            memory_actives = torch.roll(memory_actives, -1, dims=0)
+            memory_actives[-1] = 0.0
+
+            memory_novelties = torch.roll(memory_novelties, -1, dims=0)
+            memory_novelties[-1] = 0.0
+
             break
 
     if not training:
@@ -179,11 +196,11 @@ for episode in range(1, 10000):
         reward = memory_rewards[idx].item()
         active = memory_actives[idx].item()
 
-        future_reward = reward + 0.99 * future_reward if active != 0 else 0.0
+        future_reward = reward + (0.99 * future_reward if active != 0 else 0.0)
 
         memory[idx, -1] = future_reward
 
-    memory[:, -1] = memory[:, -1] / 500.0
+    memory[:, -1] = memory[:, -1] / 10.0
 
     episode_values.append(total_reward)
     average_episode_value = np.mean(episode_values)
@@ -197,10 +214,7 @@ for episode in range(1, 10000):
         normalized_memory_novelties = normalized_memory_novelties / normalized_memory_novelties.max()
 
         memory_batch_possible_ix = calculate_memory_batch_probabilities(
-            memory,
-            memory_rewards,
             memory_actives,
-            normalized_memory_novelties,
             block_size,
         )
 
@@ -242,7 +256,7 @@ for episode in range(1, 10000):
 
         plt.figure(figsize=(8, 5))
         plt.plot(memory[:, -1], label='Memory return to go')
-        plt.plot(memory_actives, 'r.', label='Memory return to go')
+        plt.plot(memory_actives, 'r.', label='Memory actives')
         normalized_memory_novelties = memory_novelties - memory_novelties[memory_novelties != 0.0].min()
         normalized_memory_novelties = normalized_memory_novelties - normalized_memory_novelties.min()
         # plt.plot(memory_novelties / memory_novelties.max(), label='Memory novelties')

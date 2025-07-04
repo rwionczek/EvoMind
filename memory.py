@@ -16,8 +16,7 @@ def calculate_last_novelty(memory, block_size):
     return distances.mean()
 
 
-def calculate_memory_batch_probabilities(memory: Tensor, memory_values: Tensor, memory_actives: Tensor,
-                                         normalized_memory_novelties,
+def calculate_memory_batch_probabilities(memory_actives: Tensor,
                                          block_size):
     active_ix = torch.where(memory_actives[block_size:-1] == 1.0)[0]
 
