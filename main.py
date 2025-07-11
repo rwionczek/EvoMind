@@ -5,23 +5,19 @@ import numpy as np
 import torch
 from matplotlib import pyplot as plt
 
+from agent.memory import Memory
 from gpt import GPTModel, block_size, device
-from memory import calculate_memory_batch_probabilities
 
 memory_size = 2 ** 14
 
 training = True
-training = False
+# training = False
 
 environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
 # environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
 
-memory_chunk_length = environment.observation_space.shape[0] + environment.action_space.n + 1
-memory = torch.zeros(memory_size, memory_chunk_length)
-memory_rewards = torch.zeros(memory_size)
-memory_actives = torch.zeros(memory_size)
-memory_batch_possible_ix = torch.zeros(memory_size)
-memory_batch_probabilities = torch.zeros(memory_size)
+memory = Memory(size=2 ** 14, observation_space_size=environment.observation_space.shape[0],
+                action_space_size=environment.action_space.n, reward_space_size=1, context_size=block_size)
 
 model = GPTModel(environment.observation_space.shape[0], environment.action_space.n).to(device)
 
@@ -45,31 +41,6 @@ def normalize_observation(observation):
     return 2.0 * (observation - observation_space_low) / (observation_space_high - observation_space_low) - 1.0
 
 
-def get_memory_train_batch():
-    possible_ix = memory_batch_possible_ix
-    # ix = torch.multinomial(memory_batch_probabilities, learn_batch_size, replacement=True)
-
-    ix = torch.randint(0, possible_ix.shape[0], (learn_batch_size,))
-
-    x = torch.stack(
-        [memory[possible_ix[i] - block_size + 1:possible_ix[i] + 1]
-         for
-         i in
-         ix])
-    x[:, :, -1] = 0.0
-
-    y = torch.stack(
-        [memory[possible_ix[i] - block_size + 2:possible_ix[i] + 2]
-         for
-         i in
-         ix])
-
-    y[:, :-1, -1] = 0.0
-
-    x, y = x.to(device), y.to(device)
-    return x, y
-
-
 eval_iters = 10
 
 episode_values = deque(maxlen=200)
@@ -88,29 +59,20 @@ for episode in range(1, 10000):
     observation, info = environment.reset()
     reward = 0
 
-    memory = torch.roll(memory, -block_size, dims=0)
-    memory[-block_size:] = torch.cat([
-        torch.tensor(normalize_observation(observation), dtype=torch.float32),
-        torch.zeros(environment.action_space.n + 1),
-    ])
-
-    memory_rewards = torch.roll(memory_rewards, -block_size, dims=0)
-    memory_rewards[-block_size:] = 0.0
-
-    memory_actives = torch.roll(memory_actives, -block_size, dims=0)
-    memory_actives[-block_size:] = 0.0
+    memory.append_episode_begin_steps(normalize_observation(observation))
 
     total_reward = 0
 
     while True:
         with torch.no_grad():
-            memory = torch.roll(memory, -1, dims=0)
-            memory[-1] = torch.cat([
+            context_steps = memory.get_context_steps()
+            context_steps = torch.roll(context_steps, -1, dims=0)
+            context_steps[-1] = torch.cat([
                 torch.tensor(normalize_observation(observation), dtype=torch.float32),
                 torch.zeros(environment.action_space.n + 1),
             ])
 
-            trajectories = memory[-block_size:].unsqueeze(0).repeat(environment.action_space.n, 1, 1)
+            trajectories = context_steps.unsqueeze(0).repeat(environment.action_space.n, 1, 1)
             trajectories[:, :, -1] = 0.0
 
             for i in range(trajectories.shape[0]):
@@ -139,57 +101,21 @@ for episode in range(1, 10000):
             action
         )
 
-        if abs(float(reward)) > 5:
-            print(
-                f"reward: {reward}\n")
-
         total_reward += reward
 
         action_tensor = torch.zeros(environment.action_space.n)
         action_tensor[action] = 1.0
 
-        memory[-1] = torch.cat([
-            torch.tensor(normalize_observation(previous_observation), dtype=torch.float32),
-            action_tensor,
-            torch.tensor([0.0], dtype=torch.float32)
-        ])
-
-        memory_rewards = torch.roll(memory_rewards, -1, dims=0)
-        memory_rewards[-1] = torch.tensor([previous_reward], dtype=torch.float32)
-
-        memory_actives = torch.roll(memory_actives, -1, dims=0)
-        memory_actives[-1] = torch.tensor([1.0], dtype=torch.float32)
+        memory.append_step(normalize_observation(previous_observation), action_tensor, previous_reward)
 
         if terminated or truncated:
-            memory = torch.roll(memory, -1, dims=0)
-            memory[-1] = torch.cat([
-                torch.tensor(normalize_observation(observation), dtype=torch.float32),
-                torch.zeros(environment.action_space.n),
-                torch.tensor([0.0], dtype=torch.float32)
-            ])
-
-            memory_rewards = torch.roll(memory_rewards, -1, dims=0)
-            memory_rewards[-1] = torch.tensor([reward], dtype=torch.float32)
-
-            memory_actives = torch.roll(memory_actives, -1, dims=0)
-            memory_actives[-1] = 0.0
-
+            memory.append_episode_end_step(normalize_observation(observation), reward)
             break
 
     if not training:
         continue
 
-    future_reward = 0.0
-
-    for idx in reversed(range(memory_size)):
-        reward = memory_rewards[idx].item()
-        active = memory_actives[idx].item()
-
-        future_reward = reward + (0.95 * future_reward if active != 0 else 0.0)
-
-        memory[idx, -1] = future_reward
-
-    memory[:, -1] = memory[:, -1] / 100.0
+    memory.recalculate_future_rewards()
 
     episode_values.append(total_reward)
     average_episode_value = np.mean(episode_values)
@@ -198,17 +124,12 @@ for episode in range(1, 10000):
     print(f"Episode: {episode}")
 
     if episode % 10 == 0:
-        memory_batch_possible_ix = calculate_memory_batch_probabilities(
-            memory_actives,
-            block_size,
-        )
+        memory.recalculate_train_mask_indexes()
 
         losses = torch.zeros(eval_iters)
-        for iter in range(300):
-            if iter % eval_iters == 0:
-                print(f"step: {iter}, loss: {losses.mean():.4f}")
-
-            xb, yb, = get_memory_train_batch()
+        for iter in range(100):
+            xb, yb, = memory.get_train_batch(learn_batch_size)
+            xb, yb = xb.to(device), yb.to(device)
 
             model.train()
 
@@ -220,6 +141,9 @@ for episode in range(1, 10000):
 
             model.eval()
 
+            if iter % eval_iters == 0:
+                print(f"step: {iter}, loss: {losses.mean():.4f}")
+
     if episode % 20 == 0:
         plt.plot(episode_values, label='Episode values')
         plt.plot(average_episode_values, label='Average episode values')
@@ -230,10 +154,6 @@ for episode in range(1, 10000):
         plt.show()
 
         plt.figure(figsize=(8, 5))
-        # plt.hist(first_action_probabilities, bins=20, color='skyblue', edgecolor='black')
-        # plt.hist(second_action_probabilities, bins=20, color='orange', edgecolor='black')
-        # plt.hist(third_action_probabilities, bins=20, color='green', edgecolor='black')
-        # plt.hist(fourth_action_probabilities, bins=20, color='red', edgecolor='black')
         plt.bar(np.arange(0, 4), actions, color='skyblue', edgecolor='black')
         plt.xlabel('Episode Values')
         plt.ylabel('Action probability')
@@ -241,8 +161,8 @@ for episode in range(1, 10000):
         plt.show()
 
         plt.figure(figsize=(8, 5))
-        plt.plot(memory[:, -1], label='Memory return to go')
-        plt.plot(memory_actives, 'r.', label='Memory actives')
+        plt.plot(memory.steps[:, -1], label='Memory return to go')
+        plt.plot(memory.train_mask, 'r.', label='Memory train mask')
         plt.xlabel('Memory step')
         plt.ylabel('Memory value')
         plt.legend()
