@@ -17,49 +17,6 @@ n_layer = 4
 dropout = 0.1
 
 
-# chars = ""
-# with open('wizard_of_oz.txt', 'r', encoding='utf-8') as f:
-#     text = f.read()
-#     chars = sorted(list(set(text)))
-#
-# vocab_size = len(chars)
-#
-# string_to_int = {ch: i for i, ch in enumerate(chars)}
-# int_to_string = {i: ch for i, ch in enumerate(chars)}
-# encode = lambda s: [string_to_int[c] for c in s]
-# decode = lambda l: ''.join([int_to_string[i] for i in l])
-#
-# data = torch.tensor(encode(text), dtype=torch.long)
-#
-# n = int(0.8 * len(data))
-# train_data = data[:n]
-# val_data = data[n:]
-
-
-# def get_batch(split):
-#     data = train_data if split == 'train' else val_data
-#     ix = torch.randint(len(data) - block_size, (batch_size,))
-#     x = torch.stack([data[i:i + block_size] for i in ix])
-#     y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
-#     x, y = x.to(device), y.to(device)
-#     return x, y
-
-
-# @torch.no_grad()
-# def estimate_loss():
-#     out = {}
-#     model.eval()
-#     for split in ['train', 'val']:
-#         losses = torch.zeros(eval_iters)
-#         for k in range(eval_iters):
-#             X, Y = get_batch(split)
-#             logits, loss = model(X, Y)
-#             losses[k] = loss.item()
-#         out[split] = losses.mean()
-#     model.train()
-#     return out
-
-
 class Head(nn.Module):
     def __init__(self, head_size):
         super().__init__()
@@ -130,11 +87,12 @@ class Block(nn.Module):
 
 
 class GPTModel(nn.Module):
-    def __init__(self, observation_size, action_size):
+    def __init__(self, observation_size, action_size, reward_size):
         super().__init__()
         self.observation_size = observation_size
         self.action_size = action_size
-        chunk_size = observation_size + action_size + 1
+        self.reward_size = reward_size
+        chunk_size = observation_size + action_size + reward_size
         self.input_layer = nn.Linear(chunk_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.ModuleList([Block(n_embd, n_head=n_head) for _ in range(n_layer)])
@@ -178,51 +136,10 @@ class GPTModel(nn.Module):
             action_targets = targets[:, self.observation_size:self.observation_size + self.action_size].argmax(dim=1)
             action_loss = F.cross_entropy(action_outputs, action_targets)
 
-            reward_outputs = outputs[:, -2]
-            reward_targets = targets[:, -2]
+            reward_outputs = outputs[:, -self.reward_size:]
+            reward_targets = targets[:, -self.reward_size:]
             reward_loss = F.mse_loss(reward_outputs, reward_targets)
 
-            wakeup_outputs = outputs[:, -1]
-            wakeup_targets = targets[:, -1]
-            wakeup_loss = F.mse_loss(wakeup_outputs, wakeup_targets)
-
-            loss = observation_loss + action_loss + reward_loss + wakeup_loss
+            loss = observation_loss + action_loss + reward_loss
 
         return outputs, loss
-
-    def generate(self, index, max_new_tokens):
-        for _ in range(max_new_tokens):
-            index_cond = index[:, -block_size:]
-            logits, loss = self.forward(index_cond)
-            logits = logits[:, -1, :]
-            props = F.softmax(logits, dim=1)
-            index_next = torch.multinomial(props, num_samples=1)
-            index = torch.cat((index, index_next), dim=1)
-        return index
-
-# model = GPTModel(vocab_size)
-# m = model.to(device)
-#
-# context = torch.zeros((1, 1), dtype=torch.long, device=device)
-# generated_chars = decode(m.generate(context, max_new_tokens=500)[0].tolist())
-# print(generated_chars)
-#
-# optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-#
-# for iter in range(max_iters):
-#     if iter % eval_iters == 0:
-#         losses = estimate_loss()
-#         print(f"step: {iter}, train loss: {losses['train']:.4f}, val loss: {losses['val']:.4f}")
-#
-#     xb, yb = get_batch('train')
-#
-#     logits, loss = model.forward(xb, yb)
-#     optimizer.zero_grad(set_to_none=True)
-#     loss.backward()
-#     optimizer.step()
-#
-# print(loss.item())
-#
-# context = torch.zeros((1, 1), dtype=torch.long, device=device)
-# generated_chars = decode(m.generate(context, max_new_tokens=500)[0].tolist())
-# print(generated_chars)
