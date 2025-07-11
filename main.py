@@ -93,7 +93,7 @@ for episode in range(1, 10000):
         agent.memory.recalculate_train_mask_indexes()
 
         losses = torch.zeros(eval_iters)
-        for iter in range(50):
+        for iter in range(300):
             loss = agent.train()
             losses[iter % eval_iters] = loss
 

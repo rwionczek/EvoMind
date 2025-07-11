@@ -1,7 +1,7 @@
 import torch
 
 from agent.memory import Memory
-from gpt import GPTModel, device, block_size
+from agent.model import GPTModel, device, block_size
 
 
 class Agent:
