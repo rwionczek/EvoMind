@@ -1,3 +1,5 @@
+from collections import deque
+
 import torch
 
 from agent.memory import Memory
@@ -17,6 +19,9 @@ class Agent:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=3e-4)
         self.learn_batch_size = 2 ** 10
         self.exploration_enabled = True
+        self.action_probabilities = [
+            deque(maxlen=1000) for _ in range(self.action_space_size)
+        ]
 
     def choose_action(self, observation):
         context_steps = self.memory.get_context_steps()
@@ -36,6 +41,9 @@ class Agent:
 
         prediction_values = prediction[:, -1, -1]
         action_probabilities = torch.softmax(prediction_values * 10.0, dim=-1)
+
+        for i in range(self.action_space_size):
+            self.action_probabilities[i].append(action_probabilities[i].item())
 
         if self.exploration_enabled:
             return action_probabilities.multinomial(num_samples=1).item()

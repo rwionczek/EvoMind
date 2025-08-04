@@ -8,14 +8,14 @@ class Memory:
         self.action_space_size = action_space_size
         self.reward_space_size = reward_space_size
         self.context_size = context_size
-        self.steps = torch.zeros(size, observation_space_size + action_space_size + reward_space_size)
+        self.steps = torch.zeros(size, observation_space_size + action_space_size + self.reward_space_size)
         self.rewards = torch.zeros(size)
         self.train_mask = torch.zeros(size)
         self.train_mask_indexes = torch.zeros(size)
 
     def append_episode_begin_steps(self, first_observation):
-        memory = torch.roll(self.steps, -self.context_size, dims=0)
-        memory[-self.context_size:] = torch.cat([
+        self.steps = torch.roll(self.steps, -self.context_size, dims=0)
+        self.steps[-self.context_size:] = torch.cat([
             torch.tensor(first_observation, dtype=torch.float32),
             torch.zeros(self.action_space_size + self.reward_space_size),
         ])
@@ -30,6 +30,7 @@ class Memory:
         return self.steps[-self.context_size:]
 
     def append_step(self, observation, action, reward):
+        self.steps = torch.roll(self.steps, -1, dims=0)
         self.steps[-1] = torch.cat([
             torch.tensor(observation, dtype=torch.float32),
             action,

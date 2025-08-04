@@ -8,7 +8,7 @@ from matplotlib import pyplot as plt
 from agent import Agent
 
 training = True
-# training = False
+training = False
 
 environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
 # environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
@@ -110,7 +110,7 @@ for episode in range(1, 10000):
         plt.show()
 
         plt.figure(figsize=(8, 5))
-        plt.bar(np.arange(0, 4), actions, color='skyblue', edgecolor='black')
+        plt.hist(agent.action_probabilities)
         plt.xlabel('Episode Values')
         plt.ylabel('Action probability')
         plt.grid(True, alpha=0.3)
