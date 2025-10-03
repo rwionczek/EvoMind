@@ -87,10 +87,11 @@ class Block(nn.Module):
 
 
 class GPTModel(nn.Module):
-    def __init__(self, observation_size, action_size, reward_size):
+    def __init__(self, observation_size, action_size, action_continuous, reward_size):
         super().__init__()
         self.observation_size = observation_size
         self.action_size = action_size
+        self.action_continuous = action_continuous
         self.reward_size = reward_size
         chunk_size = observation_size + action_size + reward_size
         self.input_layer = nn.Linear(chunk_size, n_embd)
@@ -133,8 +134,12 @@ class GPTModel(nn.Module):
             observation_loss = F.mse_loss(observation_outputs, observation_targets)
 
             action_outputs = outputs[:, self.observation_size:self.observation_size + self.action_size]
-            action_targets = targets[:, self.observation_size:self.observation_size + self.action_size].argmax(dim=1)
-            action_loss = F.cross_entropy(action_outputs, action_targets)
+            action_targets = targets[:, self.observation_size:self.observation_size + self.action_size]
+
+            if self.action_continuous:
+                action_loss = F.mse_loss(action_outputs, action_targets)
+            else:
+                action_loss = F.cross_entropy(action_outputs, action_targets.argmax(dim=1))
 
             reward_outputs = outputs[:, -self.reward_size:]
             reward_targets = targets[:, -self.reward_size:]

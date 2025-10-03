@@ -64,7 +64,7 @@ class Memory:
             reward = self.rewards[idx].item()
             active = self.train_mask[idx].item()
 
-            future_reward = reward + (0.95 * future_reward if active != 0 else 0.0)
+            future_reward = reward + (0.99 * future_reward if active != 0 else 0.0)
 
             self.steps[idx, -1] = future_reward
 

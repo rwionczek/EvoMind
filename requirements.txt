@@ -4,3 +4,4 @@ box2d
 torch
 numpy
 matplotlib
+nicegui

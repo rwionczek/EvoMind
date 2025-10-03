@@ -10,11 +10,12 @@ from agent import Agent
 training = True
 training = False
 
-environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
+# environment = gymnasium.make('LunarLander-v3', render_mode='rgb_array' if training else 'human')
+environment = gymnasium.make('BipedalWalker-v3', render_mode='rgb_array' if training else 'human')
 # environment = gymnasium.make('CartPole-v1', render_mode='rgb_array' if training else 'human')
 
 agent = Agent(observation_space_size=environment.observation_space.shape[0],
-              action_space_size=environment.action_space.n, reward_space_size=1)
+              action_space_size=environment.action_space.shape[0], action_space_continuous=True, reward_space_size=1)
 
 model_storage = 'model.pth'
 if not training:
@@ -23,9 +24,15 @@ if not training:
 observation_space_low = environment.observation_space.low
 observation_space_high = environment.observation_space.high
 
+observation_space_low = np.array([-4.8, -5.0, -0.418, -5.0])
+observation_space_high = np.array([4.8, 5.0, 0.418, 5.0])
 
-# observation_space_low = np.array([-4.8, -5.0, -0.418, -5.0])
-# observation_space_high = np.array([4.8, 5.0, 0.418, 5.0])
+observation_space_low = np.array(
+    [-3.1415927, -5., -5., -5., -3.1415927, -5., -3.1415927, -5., -0., -3.1415927, -5., -3.1415927, -5., -0., -1., -1.,
+     -1., -1., -1., -1., -1., -1., -1., -1.])
+observation_space_high = np.array(
+    [3.1415927, 5., 5., 5., 3.1415927, 5., 3.1415927, 5., 5., 3.1415927, 5., 3.1415927, 5., 5., 1., 1., 1., 1., 1., 1.,
+     1., 1., 1., 1.])
 
 
 def normalize_observation(observation):
@@ -38,41 +45,37 @@ episode_values = deque(maxlen=200)
 average_episode_values = deque(maxlen=200)
 average_trajectory_values = deque(maxlen=200)
 
-actions = [0, 0, 0, 0]
-
 for episode in range(1, 10000):
     agent.model.eval()
     observation, info = environment.reset()
     reward = 0
+    action = torch.zeros(agent.action_space_size)
 
     agent.memory.append_episode_begin_steps(normalize_observation(observation))
 
     total_reward = 0
 
     while True:
-        with torch.no_grad():
-            previous_observation = observation
-            previous_reward = reward
+        previous_observation = observation
+        previous_reward = reward
 
-            if training == False or episode % 2 == 0:
-                agent.disable_exploration()
-            else:
-                agent.enable_exploration()
+        if training == False or episode % 2 == 0:
+            agent.disable_exploration()
+        else:
+            agent.enable_exploration()
 
-            action = agent.choose_action(normalize_observation(observation))
-
-        actions[action] += 1
+        action = agent.choose_action(normalize_observation(observation), action)
 
         observation, reward, terminated, truncated, info = environment.step(
-            action
+            action.numpy()
         )
 
         total_reward += reward
 
-        action_tensor = torch.zeros(environment.action_space.n)
-        action_tensor[action] = 1.0
+        # action_tensor = torch.zeros(environment.action_space.n)
+        # action_tensor[action] = 1.0
 
-        agent.memory.append_step(normalize_observation(previous_observation), action_tensor, previous_reward)
+        agent.memory.append_step(normalize_observation(previous_observation), action, previous_reward)
 
         if terminated or truncated:
             agent.memory.append_episode_end_step(normalize_observation(observation), reward)
@@ -100,7 +103,7 @@ for episode in range(1, 10000):
             if iter % eval_iters == 0:
                 print(f"step: {iter}, loss: {losses.mean():.4f}")
 
-    if episode % 20 == 0:
+    if episode % 10 == 0:
         plt.plot(episode_values, label='Episode values')
         plt.plot(average_episode_values, label='Average episode values')
         plt.plot(average_trajectory_values, label='Average trajectory values')
@@ -110,9 +113,16 @@ for episode in range(1, 10000):
         plt.show()
 
         plt.figure(figsize=(8, 5))
-        plt.hist(agent.action_probabilities)
+        plt.hist(agent.action_values, bins=20)
         plt.xlabel('Episode Values')
         plt.ylabel('Action probability')
+        plt.grid(True, alpha=0.3)
+        plt.show()
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(agent.predicted_reward_values)
+        plt.xlabel('Step')
+        plt.ylabel('Predicted reward')
         plt.grid(True, alpha=0.3)
         plt.show()
 
