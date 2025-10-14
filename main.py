@@ -84,7 +84,7 @@ for episode in range(1, 10000):
     if not training:
         continue
 
-    agent.memory.recalculate_future_rewards()
+    agent.memory.recalculate_values()
 
     episode_values.append(total_reward)
     average_episode_value = np.mean(episode_values)
