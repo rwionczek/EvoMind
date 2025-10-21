@@ -30,17 +30,6 @@ class Memory:
 
             self.values[idx] = value
 
-    def recalculate_train_mask(self):
-        self.train_mask = np.ones(self.size)
-
-        done_indices = np.where(self.dones == 1.0)[0] + 1
-
-        for idx in done_indices:
-            start_idx = idx - 0
-            if start_idx < 0:
-                start_idx = 0
-            self.train_mask[start_idx:idx] = 0.0
-
     def get_batch(self, batch_size):
         allowed_indices = np.where(self.train_mask == 1.0)[0]
         indices = np.random.choice(allowed_indices, batch_size)

@@ -2,12 +2,10 @@ from collections import deque
 
 import gymnasium
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 
 from agent2.memory import Memory
 from agent2.model import CriticNetwork, ActionNetwork
-from agent2.utils import calculate_progress
 
 training = True
 
@@ -54,8 +52,6 @@ if not training:
     critic_network.load_state_dict(torch.load('critic_network.pth'))
 
 episode_rewards = deque(maxlen=1000)
-episode_novelties = deque(maxlen=1000)
-episode_progresses = deque(maxlen=1000)
 episode_epsilon = deque(maxlen=1000)
 critic_loss = deque(maxlen=1000)
 debug_actions = [deque(maxlen=2000) for _ in range(sum(environment.action_space.shape))]
@@ -70,7 +66,6 @@ for episode in range(3000):
 
     steps = 0
     total_reward = 0.0
-    observation_novelties = torch.ones(10)
 
     while True:
         previous_observation = observation
@@ -95,9 +90,6 @@ for episode in range(3000):
 
         total_reward += reward
 
-        observation_novelties = torch.roll(observation_novelties, -1, dims=0)
-        observation_novelties[-1] = torch.tensor(np.sum(np.abs((observation - previous_observation))))
-
         memory.append_step(previous_observation, action, reward, done)
 
         steps += 1
@@ -107,17 +99,15 @@ for episode in range(3000):
 
     episode_rewards.append(total_reward)
 
-    episode_progress = calculate_progress(list(episode_rewards)[-100:]) * 10.0
-    episode_progresses.append(episode_progress)
-
     average_reward = sum(list(episode_rewards)[-100:]) / 100.0
 
     if average_reward > 1.0:
         epsilon = 0.1
+    elif average_reward > 0:
+        epsilon = 0.2
     else:
         epsilon = 0.5
 
-    # epsilon = torch.exp(-(torch.tensor(episode_progress * 20.0).pow(2))).item() * 0.5
     episode_epsilon.append(epsilon)
 
     print(f"Episode total reward: {total_reward}")
@@ -130,7 +120,6 @@ for episode in range(3000):
         print(f"Training...")
 
         memory.recalculate_values()
-        # memory.recalculate_train_mask()
 
         for _ in range(50):
             observations, actions, values = memory.get_batch(1024)
@@ -168,7 +157,6 @@ for episode in range(3000):
         plt.show()
 
         plt.plot(episode_rewards, label='Episode total rewards')
-        plt.plot(episode_progresses, label='Episode progress')
         plt.plot(episode_epsilon, label='Episode epsilon')
         plt.xlabel('Episode')
         plt.ylabel('Total reward')
