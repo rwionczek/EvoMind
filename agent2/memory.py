@@ -4,29 +4,28 @@ import numpy as np
 class Memory:
     def __init__(self, size, observation_space_size, action_space_size):
         self.size = size
+        self.index = -1
 
         self.states = np.zeros((size,) + observation_space_size)
         self.actions = np.zeros((size,) + action_space_size)
         self.rewards = np.zeros(size)
         self.values = np.zeros(size)
         self.dones = np.ones(size)
-        self.train_mask = np.ones(size)
+        self.train_mask = np.zeros(size)
 
     def append_step(self, state, action, reward, done):
-        self.states = np.roll(self.states, -1, axis=0)
-        self.actions = np.roll(self.actions, -1, axis=0)
-        self.rewards = np.roll(self.rewards, -1, axis=0)
-        self.dones = np.roll(self.dones, -1, axis=0)
-
-        self.states[-1] = state
-        self.actions[-1] = action
-        self.rewards[-1] = reward
-        self.dones[-1] = done
+        self.index = (self.index + 1) % self.size
+        self.states[self.index] = state
+        self.actions[self.index] = action
+        self.rewards[self.index] = reward
+        self.dones[self.index] = done
+        self.train_mask[self.index] = 1.0
 
     def recalculate_values(self):
         value = 0.0
 
-        for idx in reversed(range(self.size)):
+        for idx in range(self.size):
+            idx = (self.index - idx) % self.size
             value = self.rewards[idx].item() + (0.99 * value if self.dones[idx].item() != 1.0 else 0.0)
 
             self.values[idx] = value
