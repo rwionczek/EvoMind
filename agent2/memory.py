@@ -8,15 +8,17 @@ class Memory:
 
         self.states = np.zeros((size,) + observation_space_size)
         self.actions = np.zeros((size,) + action_space_size)
+        self.epsilons = np.zeros(size)
         self.rewards = np.zeros(size)
         self.values = np.zeros(size)
         self.dones = np.ones(size)
         self.train_mask = np.zeros(size)
 
-    def append_step(self, state, action, reward, done):
+    def append_step(self, state, action, epsilon, reward, done):
         self.index = (self.index + 1) % self.size
         self.states[self.index] = state
         self.actions[self.index] = action
+        self.epsilons[self.index] = epsilon
         self.rewards[self.index] = reward
         self.dones[self.index] = done
         self.train_mask[self.index] = 1.0
@@ -36,5 +38,6 @@ class Memory:
         return (
             self.states[indices],
             self.actions[indices],
+            self.epsilons[indices],
             self.values[indices],
         )
