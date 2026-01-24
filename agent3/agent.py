@@ -1,31 +1,39 @@
-import random
-from collections import deque
-
-import gymnasium
 import numpy as np
 import torch
 import torch.nn.functional as F
-from matplotlib import pyplot as plt
 
 
 class ReplayBuffer:
-    def __init__(self, buffer_size, batch_size):
-        self.memory = deque(maxlen=buffer_size)
-        self.batch_size = batch_size
+    def __init__(self, size, observation_space_size, action_space_size):
+        self.size = size
+        self.index = -1
+
+        self.states = np.zeros((size, observation_space_size))
+        self.actions = np.zeros((size, action_space_size))
+        self.rewards = np.zeros(size)
+        self.next_states = np.zeros((size, observation_space_size))
+        self.dones = np.ones(size)
+        self.train_mask = np.zeros(size)
 
     def add(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+        self.index = (self.index + 1) % self.size
+        self.states[self.index] = state
+        self.actions[self.index] = action
+        self.rewards[self.index] = reward
+        self.next_states[self.index] = next_state
+        self.dones[self.index] = done
+        self.train_mask[self.index] = 1.0
 
-    def sample(self):
-        experiences = random.sample(self.memory, k=self.batch_size)
-
-        states = torch.FloatTensor([e[0] for e in experiences])
-        actions = torch.FloatTensor([e[1] for e in experiences])
-        rewards = torch.FloatTensor([e[2] for e in experiences])
-        next_states = torch.FloatTensor([e[3] for e in experiences])
-        dones = torch.FloatTensor([e[4] for e in experiences])
-
-        return states, actions, rewards, next_states, dones
+    def sample(self, batch_size):
+        allowed_indices = np.where(self.train_mask == 1.0)[0]
+        indices = np.random.choice(allowed_indices, batch_size)
+        return (
+            self.states[indices],
+            self.actions[indices],
+            self.rewards[indices],
+            self.next_states[indices],
+            self.dones[indices],
+        )
 
 
 class SoftQNetwork(torch.nn.Module):
@@ -81,7 +89,7 @@ class PolicyNetwork(torch.nn.Module):
         return action, log_prob
 
 
-class SACAgent:
+class Agent:
     def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, tau=0.005, target_entropy=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -108,7 +116,7 @@ class SACAgent:
         self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
 
-        self.replay_buffer = ReplayBuffer(100000, 256)
+        self.replay_buffer = ReplayBuffer(1000000, state_dim, action_dim)
 
     @property
     def alpha(self):
@@ -121,15 +129,13 @@ class SACAgent:
         return action.cpu().numpy()[0]
 
     def train(self):
-        if len(self.replay_buffer.memory) < self.replay_buffer.batch_size:
-            return
+        states, actions, rewards, next_states, dones = self.replay_buffer.sample(1024)
 
-        states, actions, rewards, next_states, dones = self.replay_buffer.sample()
-        states = states.to(self.device)
-        actions = actions.to(self.device)
-        rewards = rewards.to(self.device).unsqueeze(1)
-        next_states = next_states.to(self.device)
-        dones = dones.to(self.device).unsqueeze(1)
+        states = torch.tensor(states, dtype=torch.float32).to(self.device)
+        actions = torch.tensor(actions, dtype=torch.float32).to(self.device)
+        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device).unsqueeze(1)
+        next_states = torch.tensor(next_states, dtype=torch.float32).to(self.device)
+        dones = torch.tensor(dones, dtype=torch.float32).to(self.device).unsqueeze(1)
 
         q1_current = self.q_net1(states, actions)
         q2_current = self.q_net2(states, actions)
@@ -173,6 +179,8 @@ class SACAgent:
         self._soft_update(self.q_net1, self.target_q_net1)
         self._soft_update(self.q_net2, self.target_q_net2)
 
+        return q1_loss.item(), q2_loss.item(), policy_loss.item(), alpha_loss.item(), self.alpha.item()
+
     def _soft_update(self, local_model, target_model):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
             target_param.data.copy_(self.tau * local_param.data + (1.0 - self.tau) * target_param.data)
@@ -180,84 +188,16 @@ class SACAgent:
     def store_transition(self, state, action, reward, next_state, done):
         self.replay_buffer.add(state, action, reward, next_state, done)
 
+    def save(self, file):
+        torch.save(self.policy_net.state_dict(), file + ".policy.pt")
+        torch.save(self.q_net1.state_dict(), file + ".q1.pt")
+        torch.save(self.q_net2.state_dict(), file + ".q2.pt")
+        torch.save(self.log_alpha, file + ".alpha.pt")
 
-training = True
-
-
-def train_sac_on_environment():
-    env = gymnasium.make('BipedalWalker-v3', render_mode='rgb_array' if training else 'human')
-
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-    action_scale = env.action_space.high[0]
-
-    agent = SACAgent(state_dim, action_dim)
-
-    num_episodes = 500
-    max_steps = 1000
-
-    score_history = []
-    debug_actions = [deque(maxlen=2000) for _ in range(sum(env.action_space.shape))]
-    value_losses = deque(maxlen=2000)
-    actor_losses = deque(maxlen=2000)
-    critic_losses = deque(maxlen=2000)
-
-    for episode in range(num_episodes):
-        state, _ = env.reset()
-        episode_reward = 0
-
-        for step in range(max_steps):
-            action = agent.select_action(state)
-
-            scaled_action = action * action_scale
-
-            for i in range(sum(env.action_space.shape)):
-                debug_actions[i].append(scaled_action[i])
-
-            next_state, reward, terminated, truncated, _ = env.step(scaled_action)
-            done = terminated or truncated
-
-            agent.store_transition(state, action, reward, next_state, done)
-
-            agent.train()
-
-            state = next_state
-            episode_reward += reward
-
-            if done:
-                break
-
-        score_history.append(episode_reward)
-
-        print(f"Episode {episode}: Total Reward = {episode_reward:.2f}")
-
-        # if training:
-        #     agent.save_models()
-
-        if (episode + 1) % 10 == 0:
-            # plt.plot(value_losses, label='Value loss')
-            # plt.plot(actor_losses, label='Actor loss')
-            # plt.plot(critic_losses, label='Critic loss')
-            # plt.xlabel('Training step')
-            # plt.ylabel('Loss')
-            # plt.legend()
-            # plt.show()
-
-            plt.plot(score_history)
-            plt.xlabel('Episode')
-            plt.ylabel('Score')
-            plt.show()
-
-            plt.hist(debug_actions, bins=20, label='Action values')
-            plt.xlabel('Action Values')
-            plt.ylabel('Action occurrences')
-            plt.legend()
-            plt.show()
-
-    env.close()
-
-    return agent
-
-
-if __name__ == "__main__":
-    agent = train_sac_on_environment()
+    def load(self, file):
+        self.policy_net.load_state_dict(torch.load(file + ".policy.pt"))
+        self.q_net1.load_state_dict(torch.load(file + ".q1.pt"))
+        self.target_q_net1.load_state_dict(torch.load(file + ".q1.pt"))
+        self.q_net2.load_state_dict(torch.load(file + ".q2.pt"))
+        self.target_q_net2.load_state_dict(torch.load(file + ".q2.pt"))
+        self.log_alpha = torch.load(file + ".alpha.pt")
