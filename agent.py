@@ -89,6 +89,21 @@ class PolicyNetwork(torch.nn.Module):
         return action, log_prob
 
 
+class WorldModel(torch.nn.Module):
+    def __init__(self, state_dim, action_dim, hidden_dim=256):
+        super(WorldModel, self).__init__()
+
+        self.fc1 = torch.nn.Linear(state_dim + action_dim, hidden_dim)
+        self.fc2 = torch.nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = torch.nn.Linear(hidden_dim, state_dim)
+
+    def forward(self, state, action):
+        x = torch.cat([state, action], dim=1)
+        x = torch.relu(self.fc1(x))
+        x = torch.relu(self.fc2(x))
+        return self.fc3(x)
+
+
 class Agent:
     def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, tau=0.005, target_entropy=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -105,6 +120,9 @@ class Agent:
         self.target_q_net2 = SoftQNetwork(state_dim, action_dim).to(self.device)
         self.target_q_net1.load_state_dict(self.q_net1.state_dict())
         self.target_q_net2.load_state_dict(self.q_net2.state_dict())
+
+        self.world_model = WorldModel(state_dim, action_dim).to(self.device)
+        self.world_model_optimizer = torch.optim.Adam(self.world_model.parameters(), lr=lr)
 
         self.gamma = gamma
         self.tau = tau
@@ -126,7 +144,8 @@ class Agent:
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         with torch.no_grad():
             action, _ = self.policy_net.sample(state)
-        return action.cpu().numpy()[0]
+            predicted_next_state = self.world_model(state, action)
+        return action.cpu().numpy()[0], predicted_next_state.cpu().numpy()[0]
 
     def train(self):
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(1024)
@@ -170,6 +189,12 @@ class Agent:
         policy_loss.backward()
         self.policy_optimizer.step()
 
+        predicted_next_states = self.world_model(states, actions)
+        world_model_loss = F.mse_loss(predicted_next_states, next_states)
+        self.world_model_optimizer.zero_grad()
+        world_model_loss.backward()
+        self.world_model_optimizer.step()
+
         alpha_loss = -(self.log_alpha * (log_probs.detach() + self.target_entropy)).mean()
 
         self.alpha_optimizer.zero_grad()
@@ -179,7 +204,7 @@ class Agent:
         self._soft_update(self.q_net1, self.target_q_net1)
         self._soft_update(self.q_net2, self.target_q_net2)
 
-        return q1_loss.item(), q2_loss.item(), policy_loss.item(), alpha_loss.item(), self.alpha.item()
+        return q1_loss.item(), q2_loss.item(), policy_loss.item(), world_model_loss.item(), alpha_loss.item(), self.alpha.item()
 
     def _soft_update(self, local_model, target_model):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
