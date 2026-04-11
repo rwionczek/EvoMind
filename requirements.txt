@@ -1,7 +1,9 @@
 gymnasium
 gymnasium[classic-control]
+gymnasium[box2d]
+swig
 box2d
 torch
 numpy
 matplotlib
-nicegui
+tensorboard

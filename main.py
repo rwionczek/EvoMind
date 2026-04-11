@@ -2,9 +2,11 @@ from collections import deque
 
 import gymnasium
 import numpy as np
-from matplotlib import pyplot as plt
+from torch.utils.tensorboard import SummaryWriter
 
 from agent import Agent
+
+writer = SummaryWriter()
 
 training = True
 # training = False
@@ -25,16 +27,7 @@ if not training:
 num_episodes = 1000
 max_steps = 1000
 
-score_history = []
-extrinsic_score_history = []
-intrinsic_score_history = []
 debug_actions = [deque(maxlen=2000) for _ in range(sum(env.action_space.shape))]
-q1_losses = deque(maxlen=2000)
-q2_losses = deque(maxlen=2000)
-policy_losses = deque(maxlen=2000)
-world_model_losses = deque(maxlen=2000)
-alpha_losses = deque(maxlen=2000)
-alpha_values = deque(maxlen=2000)
 
 for episode in range(num_episodes):
     state, _ = env.reset()
@@ -68,13 +61,14 @@ for episode in range(num_episodes):
 
         if training:
             train_values = agent.train()
+            train_world_model_value = agent.train_world_model()
 
             q1_loss.append(train_values[0])
             q2_loss.append(train_values[1])
             policy_loss.append(train_values[2])
-            world_model_loss.append(train_values[3])
-            alpha_loss.append(train_values[4])
-            alpha_value.append(train_values[5])
+            world_model_loss.append(train_world_model_value)
+            alpha_loss.append(train_values[3])
+            alpha_value.append(train_values[4])
 
         state = next_state
         episode_reward += reward
@@ -84,43 +78,25 @@ for episode in range(num_episodes):
         if done:
             break
 
-    score_history.append(episode_reward)
-    extrinsic_score_history.append(episode_extrinsic_reward)
-    intrinsic_score_history.append(episode_intrinsic_reward)
-
     print(f"Episode {episode}: Total Reward = {episode_reward:.2f}; Steps = {step + 1:04d}")
 
     if not training:
         continue
 
-    q1_losses.append(sum(q1_loss) / len(q1_loss))
-    q2_losses.append(sum(q2_loss) / len(q2_loss))
-    policy_losses.append(sum(policy_loss) / len(policy_loss))
-    world_model_losses.append(sum(world_model_loss) / len(world_model_loss))
-    alpha_losses.append(sum(alpha_loss) / len(alpha_loss))
-    alpha_values.append(sum(alpha_value) * 10.0 / len(alpha_value))
+    writer.add_scalar('Loss/Q1', sum(q1_loss) / len(q1_loss), episode)
+    writer.add_scalar('Loss/Q2', sum(q2_loss) / len(q2_loss), episode)
+    writer.add_scalar('Loss/Policy', sum(policy_loss) / len(policy_loss), episode)
+    writer.add_scalar('Loss/WorldModel', sum(world_model_loss) / len(world_model_loss), episode)
+    writer.add_scalar('Loss/Alpha', sum(alpha_loss) / len(alpha_loss), episode)
+
+    writer.add_scalar('Score/Total', episode_reward, episode)
+    writer.add_scalar('Score/Extrinsic', episode_extrinsic_reward, episode)
+    writer.add_scalar('Score/Intrinsic', episode_intrinsic_reward, episode)
+
+    writer.add_scalar('Other/AlphaValue', sum(alpha_value) / len(alpha_value), episode)
 
     if (episode + 1) % 10 == 0:
         agent.save('agent_state')
 
-        plt.hist(debug_actions, bins=20, label='Action values')
-        plt.xlabel('Action Values')
-        plt.ylabel('Action occurrences')
-        plt.legend()
-        plt.show()
-
-        plt.plot(q1_losses, label='Q1 loss')
-        plt.plot(q2_losses, label='Q2 loss')
-        plt.plot(policy_losses, label='Policy loss')
-        plt.plot(world_model_losses, label='World model loss')
-        plt.plot(alpha_losses, label='Alpha loss')
-        plt.plot(alpha_values, label='Alpha value')
-        plt.plot(score_history, label='Score')
-        plt.plot(extrinsic_score_history, label='Extrinsic score')
-        plt.plot(intrinsic_score_history, label='Intrinsic score')
-        plt.xlabel('Episode')
-        plt.ylabel('Value')
-        plt.legend()
-        plt.show()
-
+writer.close()
 env.close()

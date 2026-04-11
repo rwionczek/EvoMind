@@ -90,7 +90,7 @@ class PolicyNetwork(torch.nn.Module):
 
 
 class WorldModel(torch.nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=256):
+    def __init__(self, state_dim, action_dim, hidden_dim=64):
         super(WorldModel, self).__init__()
 
         self.fc1 = torch.nn.Linear(state_dim + action_dim, hidden_dim)
@@ -107,6 +107,8 @@ class WorldModel(torch.nn.Module):
 class Agent:
     def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, tau=0.005, target_entropy=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        print(f"Using device: {self.device}")
 
         self.policy_net = PolicyNetwork(state_dim, action_dim).to(self.device)
         self.policy_optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr)
@@ -135,6 +137,7 @@ class Agent:
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
 
         self.replay_buffer = ReplayBuffer(1000000, state_dim, action_dim)
+        self.replay_buffer_short = ReplayBuffer(32, state_dim, action_dim)
 
     @property
     def alpha(self):
@@ -189,12 +192,6 @@ class Agent:
         policy_loss.backward()
         self.policy_optimizer.step()
 
-        predicted_next_states = self.world_model(states, actions)
-        world_model_loss = F.mse_loss(predicted_next_states, next_states)
-        self.world_model_optimizer.zero_grad()
-        world_model_loss.backward()
-        self.world_model_optimizer.step()
-
         alpha_loss = -(self.log_alpha * (log_probs.detach() + self.target_entropy)).mean()
 
         self.alpha_optimizer.zero_grad()
@@ -204,7 +201,22 @@ class Agent:
         self._soft_update(self.q_net1, self.target_q_net1)
         self._soft_update(self.q_net2, self.target_q_net2)
 
-        return q1_loss.item(), q2_loss.item(), policy_loss.item(), world_model_loss.item(), alpha_loss.item(), self.alpha.item()
+        return q1_loss.item(), q2_loss.item(), policy_loss.item(), alpha_loss.item(), self.alpha.item()
+
+    def train_world_model(self):
+        states, actions, rewards, next_states, dones = self.replay_buffer_short.sample(32)
+
+        states = torch.tensor(states, dtype=torch.float32).to(self.device)
+        actions = torch.tensor(actions, dtype=torch.float32).to(self.device)
+        next_states = torch.tensor(next_states, dtype=torch.float32).to(self.device)
+
+        predicted_next_states = self.world_model(states, actions)
+        world_model_loss = F.mse_loss(predicted_next_states, next_states)
+        self.world_model_optimizer.zero_grad()
+        world_model_loss.backward()
+        self.world_model_optimizer.step()
+
+        return world_model_loss.item()
 
     def _soft_update(self, local_model, target_model):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
@@ -212,12 +224,14 @@ class Agent:
 
     def store_transition(self, state, action, reward, next_state, done):
         self.replay_buffer.add(state, action, reward, next_state, done)
+        self.replay_buffer_short.add(state, action, reward, next_state, done)
 
     def save(self, file):
         torch.save(self.policy_net.state_dict(), file + ".policy.pt")
         torch.save(self.q_net1.state_dict(), file + ".q1.pt")
         torch.save(self.q_net2.state_dict(), file + ".q2.pt")
         torch.save(self.log_alpha, file + ".alpha.pt")
+        torch.save(self.world_model.state_dict(), file + ".world_model.pt")
 
     def load(self, file):
         self.policy_net.load_state_dict(torch.load(file + ".policy.pt"))
@@ -226,3 +240,4 @@ class Agent:
         self.q_net2.load_state_dict(torch.load(file + ".q2.pt"))
         self.target_q_net2.load_state_dict(torch.load(file + ".q2.pt"))
         self.log_alpha = torch.load(file + ".alpha.pt")
+        self.world_model.load_state_dict(torch.load(file + ".world_model.pt"))
