@@ -1,35 +1,58 @@
-from collections import deque
+from datetime import datetime
 
 import gymnasium
-import numpy as np
+from gymnasium.wrappers import RecordVideo
 from torch.utils.tensorboard import SummaryWriter
 
-from agent import Agent
+from agent.agent import Agent, RewardNormalizer
 
-writer = SummaryWriter()
+writer = SummaryWriter(
+    log_dir='.artifacts/tensorboard/' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+)
 
 training = True
+
+
 # training = False
 
-# env = gymnasium.make('Pendulum-v1', render_mode='rgb_array' if training else 'human')
-env = gymnasium.make('BipedalWalker-v3', render_mode='rgb_array' if training else 'human')
-# env = gymnasium.make('LunarLander-v3', continuous=True, render_mode='rgb_array' if training else 'human')
+def create_env(hardcore: bool = False):
+    # env = gymnasium.make('Pendulum-v1', render_mode='rgb_array' if training else 'human')
+    env = gymnasium.make('BipedalWalker-v3', hardcore=hardcore, render_mode='rgb_array' if training else 'human')
+    # env = gymnasium.make('LunarLander-v3', continuous=True, render_mode='rgb_array' if training else 'human')
+
+    if training:
+        env = RecordVideo(
+            env,
+            video_folder=".artifacts/records",
+            episode_trigger=lambda x: x % 25 == 0,
+            name_prefix="rl-video" + "-" + str(hardcore),
+        )
+
+    return env
+
+
+env = create_env(hardcore=False)
 
 state_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
 action_scale = env.action_space.high[0]
 
 agent = Agent(state_dim, action_dim)
+intrinsic_reward_normalizer = RewardNormalizer()
 
 if not training:
-    agent.load('agent_state')
+    agent.load('.artifacts/agent_state')
 
 num_episodes = 1000
 max_steps = 1000
 
-debug_actions = [deque(maxlen=2000) for _ in range(sum(env.action_space.shape))]
+step_global = 0
 
 for episode in range(num_episodes):
+    if episode == 900:
+        env.close()
+        env = create_env(hardcore=True)
+
     state, _ = env.reset()
     episode_reward = 0
     episode_extrinsic_reward = 0
@@ -43,17 +66,21 @@ for episode in range(num_episodes):
     alpha_value = []
 
     for step in range(max_steps):
-        action, predicted_next_state = agent.select_action(state)
+        action = agent.select_action(state)
 
         scaled_action = action * action_scale
-
-        for i in range(sum(env.action_space.shape)):
-            debug_actions[i].append(scaled_action[i])
 
         next_state, extrinsic_reward, terminated, truncated, _ = env.step(scaled_action)
         done = terminated or truncated
 
-        intrinsic_reward = np.mean(np.square(predicted_next_state - next_state))
+        # model_loss, learning_progress = agent.train_world_model(state, action, next_state)
+        #
+        # intrinsic_reward = max(learning_progress, 0.0)
+        # intrinsic_reward = intrinsic_reward_normalizer.normalize(intrinsic_reward)
+        intrinsic_reward = 0.0
+
+        extrinsic_reward = 1.0 * extrinsic_reward
+        intrinsic_reward = 1.0 * intrinsic_reward
 
         reward = extrinsic_reward + intrinsic_reward
 
@@ -61,12 +88,11 @@ for episode in range(num_episodes):
 
         if training:
             train_values = agent.train()
-            train_world_model_value = agent.train_world_model()
 
             q1_loss.append(train_values[0])
             q2_loss.append(train_values[1])
             policy_loss.append(train_values[2])
-            world_model_loss.append(train_world_model_value)
+            # world_model_loss.append(model_loss)
             alpha_loss.append(train_values[3])
             alpha_value.append(train_values[4])
 
@@ -74,6 +100,19 @@ for episode in range(num_episodes):
         episode_reward += reward
         episode_extrinsic_reward += extrinsic_reward
         episode_intrinsic_reward += intrinsic_reward
+
+        writer.add_scalars(
+            'Score',
+            {
+                'Total': reward,
+                # 'LearningProgress': learning_progress,
+                'Extrinsic': extrinsic_reward,
+                'Intrinsic': intrinsic_reward,
+            },
+            step_global,
+        )
+
+        step_global += 1
 
         if done:
             break
@@ -86,7 +125,7 @@ for episode in range(num_episodes):
     writer.add_scalar('Loss/Q1', sum(q1_loss) / len(q1_loss), episode)
     writer.add_scalar('Loss/Q2', sum(q2_loss) / len(q2_loss), episode)
     writer.add_scalar('Loss/Policy', sum(policy_loss) / len(policy_loss), episode)
-    writer.add_scalar('Loss/WorldModel', sum(world_model_loss) / len(world_model_loss), episode)
+    # writer.add_scalar('Loss/WorldModel', sum(world_model_loss) / len(world_model_loss), episode)
     writer.add_scalar('Loss/Alpha', sum(alpha_loss) / len(alpha_loss), episode)
 
     writer.add_scalar('Score/Total', episode_reward, episode)
@@ -96,7 +135,7 @@ for episode in range(num_episodes):
     writer.add_scalar('Other/AlphaValue', sum(alpha_value) / len(alpha_value), episode)
 
     if (episode + 1) % 10 == 0:
-        agent.save('agent_state')
+        agent.save('.artifacts/agent_state')
 
 writer.close()
 env.close()

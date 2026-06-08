@@ -1,6 +1,7 @@
 gymnasium
 gymnasium[classic-control]
 gymnasium[box2d]
+gymnasium[other]
 swig
 box2d
 torch
