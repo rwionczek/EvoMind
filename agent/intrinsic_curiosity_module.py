@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class FeatureEncoder(nn.Module):
@@ -43,13 +42,13 @@ class ForwardModel(nn.Module):
             nn.Linear(256, feature_dim),
         )
 
-    def forward(self, phi_state, action_one_hot):
-        x = torch.cat([phi_state, action_one_hot], dim=-1)
+    def forward(self, phi_state, action):
+        x = torch.cat([phi_state, action], dim=-1)
         return self.net(x)
 
 
 class IntrinsicCuriosityModule(nn.Module):
-    def __init__(self, state_dim, action_dim, feature_dim=128):
+    def __init__(self, state_dim, action_dim, feature_dim=32, lr=1e-3):
         super().__init__()
 
         self.encoder = FeatureEncoder(state_dim, feature_dim)
@@ -61,10 +60,6 @@ class IntrinsicCuriosityModule(nn.Module):
         phi_next_state = self.encoder(next_state)
 
         predicted_action = self.inverse_model(phi_state, phi_next_state)
-
-        action_one_hot = F.one_hot(action, num_classes=predicted_action.shape[-1]).float()
-        predicted_phi_next = self.forward_model(phi_state, action_one_hot)
+        predicted_phi_next = self.forward_model(phi_state, action)
 
         return phi_state, phi_next_state, predicted_action, predicted_phi_next
-
-    def loss(self, state, next_state, action):

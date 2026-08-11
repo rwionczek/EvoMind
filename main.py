@@ -31,7 +31,7 @@ def create_env(hardcore: bool = False):
     return env
 
 
-env = create_env(hardcore=False)
+env = create_env(hardcore=True)
 
 state_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
@@ -43,15 +43,15 @@ intrinsic_reward_normalizer = RewardNormalizer()
 if not training:
     agent.load('.artifacts/agent_state')
 
-num_episodes = 1000
+num_episodes = 2000
 max_steps = 1000
 
 step_global = 0
 
 for episode in range(num_episodes):
-    if episode == 900:
-        env.close()
-        env = create_env(hardcore=True)
+    # if episode == 900:
+    #     env.close()
+    #     env = create_env(hardcore=True)
 
     state, _ = env.reset()
     episode_reward = 0
@@ -65,6 +65,10 @@ for episode in range(num_episodes):
     alpha_loss = []
     alpha_value = []
 
+    intrinsic_curiosity_module_inverse_loss = []
+    intrinsic_curiosity_module_forward_loss = []
+    intrinsic_curiosity_module_total_loss = []
+
     for step in range(max_steps):
         action = agent.select_action(state)
 
@@ -73,14 +77,11 @@ for episode in range(num_episodes):
         next_state, extrinsic_reward, terminated, truncated, _ = env.step(scaled_action)
         done = terminated or truncated
 
-        # model_loss, learning_progress = agent.train_world_model(state, action, next_state)
-        #
-        # intrinsic_reward = max(learning_progress, 0.0)
-        # intrinsic_reward = intrinsic_reward_normalizer.normalize(intrinsic_reward)
-        intrinsic_reward = 0.0
+        intrinsic_reward = agent.calculate_intrinsic_reward(state, action, next_state)
+        intrinsic_reward = intrinsic_reward_normalizer.normalize(intrinsic_reward)
 
-        extrinsic_reward = 1.0 * extrinsic_reward
-        intrinsic_reward = 1.0 * intrinsic_reward
+        extrinsic_reward = min(0.1 * extrinsic_reward, 0.0)
+        intrinsic_reward = 0.9 * intrinsic_reward
 
         reward = extrinsic_reward + intrinsic_reward
 
@@ -95,6 +96,12 @@ for episode in range(num_episodes):
             # world_model_loss.append(model_loss)
             alpha_loss.append(train_values[3])
             alpha_value.append(train_values[4])
+
+            train_values = agent.train_intrinsic_curiosity_module()
+
+            intrinsic_curiosity_module_inverse_loss.append(train_values[0])
+            intrinsic_curiosity_module_forward_loss.append(train_values[1])
+            intrinsic_curiosity_module_total_loss.append(train_values[2])
 
         state = next_state
         episode_reward += reward
@@ -127,6 +134,16 @@ for episode in range(num_episodes):
     writer.add_scalar('Loss/Policy', sum(policy_loss) / len(policy_loss), episode)
     # writer.add_scalar('Loss/WorldModel', sum(world_model_loss) / len(world_model_loss), episode)
     writer.add_scalar('Loss/Alpha', sum(alpha_loss) / len(alpha_loss), episode)
+
+    writer.add_scalar('Loss/IntrinsicCuriosityModuleInverse',
+                      sum(intrinsic_curiosity_module_inverse_loss) / len(intrinsic_curiosity_module_inverse_loss),
+                      episode)
+    writer.add_scalar('Loss/IntrinsicCuriosityModuleForward',
+                      sum(intrinsic_curiosity_module_forward_loss) / len(intrinsic_curiosity_module_forward_loss),
+                      episode)
+    writer.add_scalar('Loss/IntrinsicCuriosityModuleTotal',
+                      sum(intrinsic_curiosity_module_total_loss) / len(intrinsic_curiosity_module_total_loss),
+                      episode)
 
     writer.add_scalar('Score/Total', episode_reward, episode)
     writer.add_scalar('Score/Extrinsic', episode_extrinsic_reward, episode)
