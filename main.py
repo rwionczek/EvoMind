@@ -5,6 +5,7 @@ from gymnasium.wrappers import RecordVideo
 from torch.utils.tensorboard import SummaryWriter
 
 from agent.agent import Agent, RewardNormalizer
+from agent.exploration_metrics import StateVisitationTracker
 
 writer = SummaryWriter(
     log_dir='.artifacts/tensorboard/' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
@@ -40,6 +41,13 @@ action_scale = env.action_space.high[0]
 agent = Agent(state_dim, action_dim)
 intrinsic_reward_normalizer = RewardNormalizer()
 
+state_visitation_tracker = StateVisitationTracker(
+    env.observation_space.low,
+    env.observation_space.high,
+    bins=10,
+    dims=[0, 1, 2, 3],
+)
+
 if not training:
     agent.load('.artifacts/agent_state')
 
@@ -54,6 +62,7 @@ for episode in range(num_episodes):
     #     env = create_env(hardcore=True)
 
     state, _ = env.reset()
+    state_visitation_tracker.update(state)
     episode_reward = 0
     episode_extrinsic_reward = 0
     episode_intrinsic_reward = 0
@@ -77,11 +86,13 @@ for episode in range(num_episodes):
         next_state, extrinsic_reward, terminated, truncated, _ = env.step(scaled_action)
         done = terminated or truncated
 
+        state_visitation_tracker.update(next_state)
+
         intrinsic_reward = agent.calculate_intrinsic_reward(state, action, next_state)
         intrinsic_reward = intrinsic_reward_normalizer.normalize(intrinsic_reward)
 
-        extrinsic_reward = min(0.1 * extrinsic_reward, 0.0)
-        intrinsic_reward = 0.9 * intrinsic_reward
+        extrinsic_reward = 0.0 * extrinsic_reward
+        intrinsic_reward = 1.0 * intrinsic_reward
 
         reward = extrinsic_reward + intrinsic_reward
 
@@ -150,6 +161,9 @@ for episode in range(num_episodes):
     writer.add_scalar('Score/Intrinsic', episode_intrinsic_reward, episode)
 
     writer.add_scalar('Other/AlphaValue', sum(alpha_value) / len(alpha_value), episode)
+
+    writer.add_scalar('Exploration/StateCoverage', state_visitation_tracker.coverage, episode)
+    writer.add_scalar('Exploration/UniqueStatesVisited', state_visitation_tracker.unique_states_visited, episode)
 
     if (episode + 1) % 10 == 0:
         agent.save('.artifacts/agent_state')
