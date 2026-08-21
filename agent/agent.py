@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from agent.intrinsic_curiosity_module import IntrinsicCuriosityModule
+from agent.curiosity import DisagreementCuriosityEngine
 from agent.networks import PolicyNetwork, SoftQNetwork, WorldModel
 from agent.replay_buffer import ReplayBuffer
 
@@ -49,11 +49,8 @@ class Agent:
         self.world_model = WorldModel(state_dim, action_dim).to(self.device)
         self.world_model_optimizer = torch.optim.Adam(self.world_model.parameters(), lr=lr)
 
-        self.intrinsic_curiosity_module = IntrinsicCuriosityModule(state_dim, action_dim).to(self.device)
-        self.intrinsic_curiosity_module_optimizer = torch.optim.Adam(
-            self.intrinsic_curiosity_module.parameters(),
-            lr=lr * 0.1,
-        )
+        self.disagreement_curiosity_engine = DisagreementCuriosityEngine(state_dim, action_dim)
+        self.disagreement_curiosity_engine.models.to(self.device)
 
         self.gamma = gamma
         self.tau = tau
@@ -86,20 +83,11 @@ class Agent:
             next_state = self.world_model(state, action)
         return next_state.cpu().numpy()[0]
 
-    def calculate_intrinsic_reward(self, state, action, next_state):
+    def calculate_intrinsic_reward(self, state, action):
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         action = torch.FloatTensor(action).unsqueeze(0).to(self.device)
-        next_state = torch.FloatTensor(next_state).unsqueeze(0).to(self.device)
 
-        phi_state = self.intrinsic_curiosity_module.encoder(state)
-        phi_next_state = self.intrinsic_curiosity_module.encoder(next_state)
-        predicted_phi_next_state = self.intrinsic_curiosity_module.forward_model(phi_state, action)
-
-        return F.mse_loss(
-            phi_next_state,
-            predicted_phi_next_state,
-            reduction='none',
-        ).mean(dim=-1).item()
+        return self.disagreement_curiosity_engine.get_intrinsic_reward(state, action)
 
     def train(self):
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(1024)
@@ -175,41 +163,16 @@ class Agent:
 
         return model_loss, learning_progress
 
-    def train_intrinsic_curiosity_module(self, beta=0.2):
-        state, action, reward, next_state, done = self.replay_buffer.sample(1024)
+    def train_curiosity_engine(self):
+        state, action, _, next_state, _ = self.replay_buffer.sample(1024)
 
         state = torch.tensor(state, dtype=torch.float32).to(self.device)
         action = torch.tensor(action, dtype=torch.float32).to(self.device)
         next_state = torch.tensor(next_state, dtype=torch.float32).to(self.device)
 
-        phi_state, phi_next_state, predicted_action, predicted_phi_next = self.intrinsic_curiosity_module.forward(
-            state,
-            next_state,
-            action,
-        )
+        loss = self.disagreement_curiosity_engine.train_step(state, action, next_state)
 
-        inverse_loss = F.mse_loss(
-            predicted_action,
-            action,
-            reduction="none",
-        ).mean(dim=-1)
-
-        forward_loss = F.mse_loss(
-            predicted_phi_next,
-            phi_next_state.detach(),
-            reduction="none",
-        ).mean(dim=-1)
-
-        inverse_loss = inverse_loss.mean()
-        forward_loss = forward_loss.mean()
-
-        total_loss = (1.0 - beta) * inverse_loss + beta * forward_loss
-
-        self.intrinsic_curiosity_module_optimizer.zero_grad()
-        total_loss.backward()
-        self.intrinsic_curiosity_module_optimizer.step()
-
-        return inverse_loss.item(), forward_loss.item(), total_loss.item()
+        return loss
 
     def _soft_update(self, local_model, target_model):
         for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):

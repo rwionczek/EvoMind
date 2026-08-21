@@ -39,6 +39,7 @@ action_dim = env.action_space.shape[0]
 action_scale = env.action_space.high[0]
 
 agent = Agent(state_dim, action_dim)
+extrinsic_reward_normalizer = RewardNormalizer()
 intrinsic_reward_normalizer = RewardNormalizer()
 
 state_visitation_tracker = StateVisitationTracker(
@@ -74,9 +75,7 @@ for episode in range(num_episodes):
     alpha_loss = []
     alpha_value = []
 
-    intrinsic_curiosity_module_inverse_loss = []
-    intrinsic_curiosity_module_forward_loss = []
-    intrinsic_curiosity_module_total_loss = []
+    curiosity_engine_loss = []
 
     for step in range(max_steps):
         action = agent.select_action(state)
@@ -88,11 +87,13 @@ for episode in range(num_episodes):
 
         state_visitation_tracker.update(next_state)
 
-        intrinsic_reward = agent.calculate_intrinsic_reward(state, action, next_state)
+        intrinsic_reward = agent.calculate_intrinsic_reward(state, action)
+
+        extrinsic_reward = extrinsic_reward_normalizer.normalize(extrinsic_reward)
         intrinsic_reward = intrinsic_reward_normalizer.normalize(intrinsic_reward)
 
-        extrinsic_reward = 0.0 * extrinsic_reward
-        intrinsic_reward = 1.0 * intrinsic_reward
+        extrinsic_reward = 0.5 * extrinsic_reward
+        intrinsic_reward = 0.5 * intrinsic_reward
 
         reward = extrinsic_reward + intrinsic_reward
 
@@ -108,11 +109,7 @@ for episode in range(num_episodes):
             alpha_loss.append(train_values[3])
             alpha_value.append(train_values[4])
 
-            train_values = agent.train_intrinsic_curiosity_module()
-
-            intrinsic_curiosity_module_inverse_loss.append(train_values[0])
-            intrinsic_curiosity_module_forward_loss.append(train_values[1])
-            intrinsic_curiosity_module_total_loss.append(train_values[2])
+            curiosity_engine_loss.append(agent.train_curiosity_engine())
 
         state = next_state
         episode_reward += reward
@@ -146,15 +143,7 @@ for episode in range(num_episodes):
     # writer.add_scalar('Loss/WorldModel', sum(world_model_loss) / len(world_model_loss), episode)
     writer.add_scalar('Loss/Alpha', sum(alpha_loss) / len(alpha_loss), episode)
 
-    writer.add_scalar('Loss/IntrinsicCuriosityModuleInverse',
-                      sum(intrinsic_curiosity_module_inverse_loss) / len(intrinsic_curiosity_module_inverse_loss),
-                      episode)
-    writer.add_scalar('Loss/IntrinsicCuriosityModuleForward',
-                      sum(intrinsic_curiosity_module_forward_loss) / len(intrinsic_curiosity_module_forward_loss),
-                      episode)
-    writer.add_scalar('Loss/IntrinsicCuriosityModuleTotal',
-                      sum(intrinsic_curiosity_module_total_loss) / len(intrinsic_curiosity_module_total_loss),
-                      episode)
+    writer.add_scalar('Loss/Curiosity', sum(curiosity_engine_loss) / len(curiosity_engine_loss), episode)
 
     writer.add_scalar('Score/Total', episode_reward, episode)
     writer.add_scalar('Score/Extrinsic', episode_extrinsic_reward, episode)
