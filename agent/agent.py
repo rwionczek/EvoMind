@@ -87,16 +87,19 @@ class Agent:
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
         action = torch.FloatTensor(action).unsqueeze(0).to(self.device)
 
-        return self.disagreement_curiosity_engine.get_intrinsic_reward(state, action)
+        return self.disagreement_curiosity_engine.get_intrinsic_reward(state, action).item()
 
     def train(self):
-        states, actions, rewards, next_states, dones = self.replay_buffer.sample(1024)
+        states, actions, extrinsic_rewards, next_states, dones = self.replay_buffer.sample(1024)
 
         states = torch.tensor(states, dtype=torch.float32).to(self.device)
         actions = torch.tensor(actions, dtype=torch.float32).to(self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32).to(self.device).unsqueeze(1)
+        extrinsic_rewards = torch.tensor(extrinsic_rewards, dtype=torch.float32).to(self.device).unsqueeze(1)
         next_states = torch.tensor(next_states, dtype=torch.float32).to(self.device)
         dones = torch.tensor(dones, dtype=torch.float32).to(self.device).unsqueeze(1)
+
+        intrinsic_rewards = self.disagreement_curiosity_engine.get_intrinsic_reward(states, actions).unsqueeze(1)
+        rewards = 0.0 * extrinsic_rewards + intrinsic_rewards
 
         q1_current = self.q_net1(states, actions)
         q2_current = self.q_net2(states, actions)

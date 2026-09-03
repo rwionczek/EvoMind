@@ -4,7 +4,7 @@ import gymnasium
 from gymnasium.wrappers import RecordVideo
 from torch.utils.tensorboard import SummaryWriter
 
-from agent.agent import Agent, RewardNormalizer
+from agent.agent import Agent
 from agent.exploration_metrics import StateVisitationTracker
 
 writer = SummaryWriter(
@@ -39,8 +39,6 @@ action_dim = env.action_space.shape[0]
 action_scale = env.action_space.high[0]
 
 agent = Agent(state_dim, action_dim)
-extrinsic_reward_normalizer = RewardNormalizer()
-intrinsic_reward_normalizer = RewardNormalizer()
 
 state_visitation_tracker = StateVisitationTracker(
     env.observation_space.low,
@@ -58,7 +56,7 @@ max_steps = 1000
 step_global = 0
 
 for episode in range(num_episodes):
-    # if episode == 900:
+    # if episode == 800:
     #     env.close()
     #     env = create_env(hardcore=True)
 
@@ -87,17 +85,11 @@ for episode in range(num_episodes):
 
         state_visitation_tracker.update(next_state)
 
+        # extrinsic_reward = 0.01 * extrinsic_reward
+
+        agent.store_transition(state, action, extrinsic_reward, next_state, done)
+
         intrinsic_reward = agent.calculate_intrinsic_reward(state, action)
-
-        extrinsic_reward = extrinsic_reward_normalizer.normalize(extrinsic_reward)
-        intrinsic_reward = intrinsic_reward_normalizer.normalize(intrinsic_reward)
-
-        extrinsic_reward = 0.5 * extrinsic_reward
-        intrinsic_reward = 0.5 * intrinsic_reward
-
-        reward = extrinsic_reward + intrinsic_reward
-
-        agent.store_transition(state, action, reward, next_state, done)
 
         if training:
             train_values = agent.train()
@@ -110,6 +102,8 @@ for episode in range(num_episodes):
             alpha_value.append(train_values[4])
 
             curiosity_engine_loss.append(agent.train_curiosity_engine())
+
+        reward = extrinsic_reward + intrinsic_reward
 
         state = next_state
         episode_reward += reward

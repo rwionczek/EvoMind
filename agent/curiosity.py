@@ -30,9 +30,6 @@ class DisagreementCuriosityEngine:
         self.criterion = nn.MSELoss(reduction='none')
 
     def get_intrinsic_reward(self, state, action):
-        """
-        Calculates the disagreement (variance) across the ensemble models.
-        """
         self.models.eval()
         with torch.no_grad():
             predictions = []
@@ -44,7 +41,7 @@ class DisagreementCuriosityEngine:
 
             ensemble_variance = torch.var(predictions, dim=0).mean(dim=-1)
 
-        return ensemble_variance.item()
+        return ensemble_variance
 
     def train_step(self, state, action, next_state):
         self.models.train()
