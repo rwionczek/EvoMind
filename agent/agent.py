@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 
 from agent.curiosity import DisagreementCuriosityEngine
-from agent.networks import PolicyNetwork, SoftQNetwork, WorldModel
+from agent.networks import PolicyNetwork, SoftQNetwork
 from agent.replay_buffer import ReplayBuffer
 
 
@@ -51,9 +51,6 @@ class Agent:
         self.target_q_net1.load_state_dict(self.q_net1.state_dict())
         self.target_q_net2.load_state_dict(self.q_net2.state_dict())
 
-        self.world_model = WorldModel(state_dim, action_dim).to(self.device)
-        self.world_model_optimizer = torch.optim.Adam(self.world_model.parameters(), lr=lr)
-
         self.disagreement_curiosity_engine = DisagreementCuriosityEngine(state_dim, action_dim)
         self.disagreement_curiosity_engine.models.to(self.device)
 
@@ -79,14 +76,6 @@ class Agent:
         with torch.no_grad():
             action, _ = self.policy_net.sample(state)
         return action.cpu().numpy()[0]
-
-    def predict_next_state(self, state, action):
-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        action = torch.FloatTensor(action).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            next_state = self.world_model(state, action)
-        return next_state.cpu().numpy()[0]
 
     def calculate_intrinsic_reward(self, state, action):
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
@@ -150,27 +139,6 @@ class Agent:
 
         return q1_loss.item(), q2_loss.item(), policy_loss.item(), alpha_loss.item(), self.alpha.item()
 
-    def train_world_model(self, state, action, next_state):
-        state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        action = torch.FloatTensor(action).unsqueeze(0).to(self.device)
-        next_state = torch.FloatTensor(next_state).unsqueeze(0).to(self.device)
-
-        with torch.no_grad():
-            error_before = F.mse_loss(self.world_model(state, action), next_state)
-
-        model_loss = F.mse_loss(self.world_model(state, action), next_state)
-
-        self.world_model_optimizer.zero_grad()
-        model_loss.backward()
-        self.world_model_optimizer.step()
-
-        with torch.no_grad():
-            error_after = F.mse_loss(self.world_model(state, action), next_state)
-
-        learning_progress = error_before.item() - error_after.item()
-
-        return model_loss, learning_progress
-
     def train_curiosity_engine(self):
         state, action, _, next_state, _ = self.replay_buffer.sample(1024)
 
@@ -196,7 +164,6 @@ class Agent:
         torch.save(self.q_net1.state_dict(), directory + "/q1.pt")
         torch.save(self.q_net2.state_dict(), directory + "/q2.pt")
         torch.save(self.log_alpha, directory + "/alpha.pt")
-        torch.save(self.world_model.state_dict(), directory + "/world_model.pt")
 
     def load(self, directory):
         self.policy_net.load_state_dict(torch.load(directory + "/policy.pt"))
@@ -205,4 +172,3 @@ class Agent:
         self.q_net2.load_state_dict(torch.load(directory + "/q2.pt"))
         self.target_q_net2.load_state_dict(torch.load(directory + "/q2.pt"))
         self.log_alpha = torch.load(directory + "/alpha.pt")
-        self.world_model.load_state_dict(torch.load(directory + "/world_model.pt"))

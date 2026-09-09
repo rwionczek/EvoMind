@@ -53,18 +53,3 @@ class PolicyNetwork(torch.nn.Module):
         log_prob -= torch.log(1 - action.pow(2) + 1e-6).sum(1, keepdim=True)
 
         return action, log_prob
-
-
-class WorldModel(torch.nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_dim=128):
-        super(WorldModel, self).__init__()
-
-        self.fc1 = torch.nn.Linear(state_dim + action_dim, hidden_dim)
-        self.fc2 = torch.nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = torch.nn.Linear(hidden_dim, state_dim)
-
-    def forward(self, state, action):
-        x = torch.cat([state, action], dim=1)
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        return self.fc3(x)
