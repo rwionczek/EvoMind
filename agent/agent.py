@@ -29,7 +29,12 @@ class RewardNormalizer:
 
 class Agent:
     def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, tau=0.005, target_entropy=None):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device("cpu")
+
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif torch.mps.is_available():
+            self.device = torch.device("mps")
 
         print(f"Using device: {self.device}")
 
