@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import gymnasium
+import numpy as np
 from gymnasium.wrappers import RecordVideo
 from torch.utils.tensorboard import SummaryWriter
 
@@ -38,7 +39,8 @@ state_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
 action_scale = env.action_space.high[0]
 
-agent = Agent(state_dim, action_dim)
+manager_agent = Agent(state_dim, state_dim)
+worker_agent = Agent(state_dim + state_dim, action_dim)
 
 state_visitation_tracker = StateVisitationTracker(
     env.observation_space.low,
@@ -48,7 +50,8 @@ state_visitation_tracker = StateVisitationTracker(
 )
 
 if not training:
-    agent.load('.artifacts/agent_state')
+    manager_agent.load('.artifacts/manager_agent_state')
+    worker_agent.load('.artifacts/worker_agent_state')
 
 num_episodes = 2000
 max_steps = 1000
@@ -75,8 +78,18 @@ for episode in range(num_episodes):
 
     curiosity_engine_loss = []
 
+    target_state = np.zeros(state_dim)
+    manager_reward = 0.0
+    k = 10
+
     for step in range(max_steps):
-        action = agent.select_action(state)
+        if step % k == 0:
+            target_state = manager_agent.select_action(state)
+            manager_reward = 0.0
+
+        worker_input = np.concat([state, target_state])
+
+        action = worker_agent.select_action(worker_input)
 
         scaled_action = action * action_scale
 
@@ -87,12 +100,29 @@ for episode in range(num_episodes):
 
         # extrinsic_reward = 0.01 * extrinsic_reward
 
-        agent.store_transition(state, action, extrinsic_reward, next_state, done)
+        worker_reward = -np.linalg.norm(target_state - next_state)
+        worker_agent.store_transition(
+            worker_input,
+            action,
+            worker_reward,
+            np.concat([next_state, target_state]),
+            done,
+        )
 
-        intrinsic_reward = agent.calculate_intrinsic_reward(state, action)
+        manager_reward += extrinsic_reward
+
+        if (step + 1) % k == 0 or done:
+            intrinsic_reward = manager_agent.calculate_intrinsic_reward(state, target_state)
+            manager_agent.store_transition(
+                state,
+                target_state,
+                manager_reward + intrinsic_reward,
+                next_state,
+                done,
+            )
 
         if training:
-            train_values = agent.train()
+            train_values = worker_agent.train()
 
             q1_loss.append(train_values[0])
             q2_loss.append(train_values[1])
@@ -101,7 +131,9 @@ for episode in range(num_episodes):
             alpha_loss.append(train_values[3])
             alpha_value.append(train_values[4])
 
-            curiosity_engine_loss.append(agent.train_curiosity_engine())
+            if (step + 1) % k == 0:
+                manager_agent.train()
+                curiosity_engine_loss.append(manager_agent.train_curiosity_engine())
 
         reward = extrinsic_reward + intrinsic_reward
 
