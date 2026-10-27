@@ -2,11 +2,12 @@ from datetime import datetime
 
 import gymnasium
 import numpy as np
-from gymnasium.wrappers import RecordVideo
+from gymnasium.wrappers import RecordVideo, NormalizeObservation
 from torch.utils.tensorboard import SummaryWriter
 
-from agent.agent import Agent
 from agent.exploration_metrics import StateVisitationTracker
+from agent.manager import Manager
+from agent.worker import Worker
 
 writer = SummaryWriter(
     log_dir='.artifacts/tensorboard/' + datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
@@ -22,6 +23,8 @@ def create_env(hardcore: bool = False):
     env = gymnasium.make('BipedalWalker-v3', hardcore=hardcore, render_mode='rgb_array' if training else 'human')
     # env = gymnasium.make('LunarLander-v3', continuous=True, render_mode='rgb_array' if training else 'human')
 
+    env = NormalizeObservation(env, epsilon=1e-8)
+
     if training:
         env = RecordVideo(
             env,
@@ -33,14 +36,14 @@ def create_env(hardcore: bool = False):
     return env
 
 
-env = create_env(hardcore=True)
+env = create_env(hardcore=False)
 
 state_dim = env.observation_space.shape[0]
 action_dim = env.action_space.shape[0]
 action_scale = env.action_space.high[0]
 
-manager_agent = Agent(state_dim, state_dim)
-worker_agent = Agent(state_dim + state_dim, action_dim)
+manager_agent = Manager(state_dim, state_dim)
+worker_agent = Worker(state_dim + state_dim, action_dim)
 
 state_visitation_tracker = StateVisitationTracker(
     env.observation_space.low,
@@ -65,27 +68,35 @@ for episode in range(num_episodes):
 
     state, _ = env.reset()
     state_visitation_tracker.update(state)
-    episode_reward = 0
-    episode_extrinsic_reward = 0
-    episode_intrinsic_reward = 0
+    episode_worker_reward = 0
+    episode_manager_extrinsic_reward = 0
+    episode_manager_intrinsic_reward = 0
 
-    q1_loss = []
-    q2_loss = []
-    policy_loss = []
+    manager_q1_loss = []
+    manager_q2_loss = []
+    manager_policy_loss = []
+    manager_alpha_loss = []
+    manager_alpha_value = []
+
+    worker_q1_loss = []
+    worker_q2_loss = []
+    worker_policy_loss = []
     world_model_loss = []
-    alpha_loss = []
-    alpha_value = []
+    worker_alpha_loss = []
+    worker_alpha_value = []
 
     curiosity_engine_loss = []
 
+    source_state = state
     target_state = np.zeros(state_dim)
-    manager_reward = 0.0
+    manager_extrinsic_reward = 0.0
     k = 10
 
     for step in range(max_steps):
         if step % k == 0:
-            target_state = manager_agent.select_action(state)
-            manager_reward = 0.0
+            source_state = state
+            target_state = manager_agent.select_action(source_state)
+            manager_extrinsic_reward = 0.0
 
         worker_input = np.concat([state, target_state])
 
@@ -109,46 +120,56 @@ for episode in range(num_episodes):
             done,
         )
 
-        manager_reward += extrinsic_reward
+        manager_extrinsic_reward += extrinsic_reward
 
         if (step + 1) % k == 0 or done:
-            intrinsic_reward = manager_agent.calculate_intrinsic_reward(state, target_state)
             manager_agent.store_transition(
-                state,
+                source_state,
                 target_state,
-                manager_reward + intrinsic_reward,
+                manager_extrinsic_reward,
                 next_state,
                 done,
             )
 
-        if training:
-            train_values = worker_agent.train()
+            manager_intrinsic_reward = manager_agent.calculate_intrinsic_reward(source_state, target_state)
+            episode_manager_extrinsic_reward += manager_extrinsic_reward
+            episode_manager_intrinsic_reward += manager_intrinsic_reward
 
-            q1_loss.append(train_values[0])
-            q2_loss.append(train_values[1])
-            policy_loss.append(train_values[2])
-            # world_model_loss.append(model_loss)
-            alpha_loss.append(train_values[3])
-            alpha_value.append(train_values[4])
+            writer.add_scalars(
+                'Score',
+                {
+                    'ManagerExtrinsicReward': manager_extrinsic_reward,
+                    'ManagerIntrinsicReward': manager_intrinsic_reward,
+                },
+                step_global,
+            )
+
+        if training:
+            worker_train_values = worker_agent.train()
+
+            worker_q1_loss.append(worker_train_values[0])
+            worker_q2_loss.append(worker_train_values[1])
+            worker_policy_loss.append(worker_train_values[2])
+            worker_alpha_loss.append(worker_train_values[3])
+            worker_alpha_value.append(worker_train_values[4])
 
             if (step + 1) % k == 0:
-                manager_agent.train()
+                manager_train_values = manager_agent.train()
                 curiosity_engine_loss.append(manager_agent.train_curiosity_engine())
 
-        reward = extrinsic_reward + intrinsic_reward
+                manager_q1_loss.append(manager_train_values[0])
+                manager_q2_loss.append(manager_train_values[1])
+                manager_policy_loss.append(manager_train_values[2])
+                manager_alpha_loss.append(manager_train_values[3])
+                manager_alpha_value.append(manager_train_values[4])
 
         state = next_state
-        episode_reward += reward
-        episode_extrinsic_reward += extrinsic_reward
-        episode_intrinsic_reward += intrinsic_reward
+        episode_worker_reward += worker_reward
 
         writer.add_scalars(
             'Score',
             {
-                'Total': reward,
-                # 'LearningProgress': learning_progress,
-                'Extrinsic': extrinsic_reward,
-                'Intrinsic': intrinsic_reward,
+                'WorkerReward': worker_reward,
             },
             step_global,
         )
@@ -158,30 +179,39 @@ for episode in range(num_episodes):
         if done:
             break
 
-    print(f"Episode {episode}: Total Reward = {episode_reward:.2f}; Steps = {step + 1:04d}")
+    print(f"Episode {episode}: Worker Reward = {episode_worker_reward:.2f}; Steps = {step + 1:04d}")
 
     if not training:
         continue
 
-    writer.add_scalar('Loss/Q1', sum(q1_loss) / len(q1_loss), episode)
-    writer.add_scalar('Loss/Q2', sum(q2_loss) / len(q2_loss), episode)
-    writer.add_scalar('Loss/Policy', sum(policy_loss) / len(policy_loss), episode)
+    writer.add_scalar('Loss/Manager/Q1', sum(manager_q1_loss) / len(manager_q1_loss), episode)
+    writer.add_scalar('Loss/Manager/Q2', sum(manager_q2_loss) / len(manager_q2_loss), episode)
+    writer.add_scalar('Loss/Manager/Policy', sum(manager_policy_loss) / len(manager_policy_loss), episode)
     # writer.add_scalar('Loss/WorldModel', sum(world_model_loss) / len(world_model_loss), episode)
-    writer.add_scalar('Loss/Alpha', sum(alpha_loss) / len(alpha_loss), episode)
+    writer.add_scalar('Loss/Manager/Alpha', sum(manager_alpha_loss) / len(manager_alpha_loss), episode)
 
-    writer.add_scalar('Loss/Curiosity', sum(curiosity_engine_loss) / len(curiosity_engine_loss), episode)
+    writer.add_scalar('Loss/Worker/Q1', sum(worker_q1_loss) / len(worker_q1_loss), episode)
+    writer.add_scalar('Loss/Worker/Q2', sum(worker_q2_loss) / len(worker_q2_loss), episode)
+    writer.add_scalar('Loss/Worker/Policy', sum(worker_policy_loss) / len(worker_policy_loss), episode)
+    # writer.add_scalar('Loss/WorldModel', sum(world_model_loss) / len(world_model_loss), episode)
+    writer.add_scalar('Loss/Worker/Alpha', sum(worker_alpha_loss) / len(worker_alpha_loss), episode)
 
-    writer.add_scalar('Score/Total', episode_reward, episode)
-    writer.add_scalar('Score/Extrinsic', episode_extrinsic_reward, episode)
-    writer.add_scalar('Score/Intrinsic', episode_intrinsic_reward, episode)
+    if len(curiosity_engine_loss) > 0:
+        writer.add_scalar('Loss/Curiosity', sum(curiosity_engine_loss) / len(curiosity_engine_loss), episode)
 
-    writer.add_scalar('Other/AlphaValue', sum(alpha_value) / len(alpha_value), episode)
+    writer.add_scalar('Score/Worker', episode_worker_reward, episode)
+    writer.add_scalar('Score/ManagerExtrinsic', episode_manager_extrinsic_reward, episode)
+    writer.add_scalar('Score/ManagerIntrinsic', episode_manager_intrinsic_reward, episode)
+
+    writer.add_scalar('Other/Manager/AlphaValue', sum(worker_alpha_value) / len(worker_alpha_value), episode)
+    writer.add_scalar('Other/Worker/AlphaValue', sum(worker_alpha_value) / len(worker_alpha_value), episode)
 
     writer.add_scalar('Exploration/StateCoverage', state_visitation_tracker.coverage, episode)
     writer.add_scalar('Exploration/UniqueStatesVisited', state_visitation_tracker.unique_states_visited, episode)
 
     if (episode + 1) % 10 == 0:
-        agent.save('.artifacts/agent_state')
+        manager_agent.save('.artifacts/manager_agent_state')
+        worker_agent.save('.artifacts/worker_agent_state')
 
 writer.close()
 env.close()

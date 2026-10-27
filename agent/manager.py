@@ -1,6 +1,5 @@
 import os
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -9,25 +8,7 @@ from agent.networks import PolicyNetwork, SoftQNetwork
 from agent.replay_buffer import ReplayBuffer
 
 
-class RewardNormalizer:
-    def __init__(self, alpha=0.99, epsilon=1e-8):
-        self.alpha = alpha
-        self.epsilon = epsilon
-        self.ema_mean = 0.0
-        self.ema_sq = 0.0
-
-    def normalize(self, reward):
-        self.ema_mean = self.alpha * self.ema_mean + (1 - self.alpha) * reward
-        self.ema_sq = self.alpha * self.ema_sq + (1 - self.alpha) * (reward ** 2)
-
-        var = self.ema_sq - self.ema_mean ** 2
-
-        std = np.sqrt(max(var, 0.0)) + self.epsilon
-
-        return (reward - self.ema_mean) / std
-
-
-class Agent:
+class Manager:
     def __init__(self, state_dim, action_dim, lr=3e-4, gamma=0.99, tau=0.005, target_entropy=None):
         self.device = torch.device("cpu")
 
@@ -65,7 +46,6 @@ class Agent:
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=lr)
 
         self.replay_buffer = ReplayBuffer(1000000, state_dim, action_dim)
-        self.replay_buffer_short = ReplayBuffer(32, state_dim, action_dim)
 
     @property
     def alpha(self):
@@ -93,7 +73,7 @@ class Agent:
         dones = torch.tensor(dones, dtype=torch.float32).to(self.device).unsqueeze(1)
 
         intrinsic_rewards = self.disagreement_curiosity_engine.get_intrinsic_reward(states, actions).unsqueeze(1)
-        rewards = 0.0 * extrinsic_rewards + intrinsic_rewards
+        rewards = extrinsic_rewards + intrinsic_rewards
 
         q1_current = self.q_net1(states, actions)
         q2_current = self.q_net2(states, actions)
@@ -156,7 +136,6 @@ class Agent:
 
     def store_transition(self, state, action, reward, next_state, done):
         self.replay_buffer.add(state, action, reward, next_state, done)
-        self.replay_buffer_short.add(state, action, reward, next_state, done)
 
     def save(self, directory):
         os.makedirs(directory, exist_ok=True)
